@@ -1,4 +1,3 @@
-
 import { useState } from "react";
 import SpeechRecognition, { useSpeechRecognition } from "react-speech-recognition";
 import ChatMessage from "./ChatMessage";
@@ -11,6 +10,9 @@ const ChatWindow = () => {
   const [translateFrom, setTranslateFrom] = useState("auto");
   const [translateTo, setTranslateTo] = useState("en");
 
+  const userId = localStorage.getItem("userId") || crypto.randomUUID();
+  localStorage.setItem("userId", userId);
+
   const { transcript, resetTranscript, listening } = useSpeechRecognition();
 
   if (!SpeechRecognition.browserSupportsSpeechRecognition()) {
@@ -18,18 +20,40 @@ const ChatWindow = () => {
   }
 
   const handleSendVoiceMessage = async () => {
-    const userMessage = transcript;
+    const userMessage = transcript.trim(); // ✅ trim
     resetTranscript();
+
     if (!userMessage) return;
 
-    const { translatedUserMessage, agentReplyOriginal, agentReplyTranslated } =
-      await sendUserMessage(userMessage, translateFrom, translateTo);
+    try {
+      const {
+        translatedUserMessage,
+        agentReplyOriginal,
+        agentReplyTranslated
+      } = await sendUserMessage(
+        userMessage,
+        translateFrom,
+        translateTo,
+        userId // ✅ FIX: pass userId
+      );
 
-    setChatHistory(prev => [
-      ...prev,
-      { role: "user", original: userMessage, translated: translatedUserMessage },
-      { role: "agent", original: agentReplyOriginal, translated: agentReplyTranslated },
-    ]);
+      setChatHistory(prev => [
+        ...prev,
+        {
+          role: "user",
+          original: userMessage,
+          translated: translatedUserMessage
+        },
+        {
+          role: "agent",
+          original: agentReplyOriginal,
+          translated: agentReplyTranslated
+        }
+      ]);
+    } catch (err) {
+      console.error("❌ Frontend error:", err);
+      alert("Error: " + err.message);
+    }
   };
 
   const toggleListening = () => {
@@ -37,7 +61,10 @@ const ChatWindow = () => {
       SpeechRecognition.stopListening();
       handleSendVoiceMessage();
     } else {
-      SpeechRecognition.startListening({ continuous: true, language: translateFrom });
+      SpeechRecognition.startListening({
+        continuous: true,
+        language: translateFrom === "auto" ? "en-US" : translateFrom // ✅ FIX
+      });
     }
   };
 
@@ -53,11 +80,15 @@ const ChatWindow = () => {
         alignItems: "center",
         padding: "20px"
       }}>
-        <img src={avatar} alt="User Avatar" style={{
-          width: "70px",
-          borderRadius: "50%",
-          alignSelf: "center"
-        }}/>
+        <img
+          src={avatar}
+          alt="User Avatar"
+          style={{
+            width: "70px",
+            borderRadius: "50%"
+          }}
+        />
+
         <button
           onClick={toggleListening}
           style={{

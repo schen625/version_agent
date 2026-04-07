@@ -1,3 +1,13 @@
+# How to start
+Start the backend:
+    cd into server
+    npm start 
+
+Start frontend:
+    in main repo 
+    npm start
+
+
 # Getting Started with Create React App
 
 This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
