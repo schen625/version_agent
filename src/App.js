@@ -1,19 +1,29 @@
-// src/App.js
-import React from "react";
-import "./App.css";
-import ChatWindow from "./components/ChatWindow";
+import { useState } from "react";
+import Auth from "./components/Auth";
+import ModePage from "./components/ModePage";
+import LearnMode from "./components/LearnMode";
 
-function App() {
+export default function App() {
+  const [loggedIn, setLoggedIn] = useState(false);
+  const [mode, setMode] = useState(null);
+
+  if (!loggedIn) {
+    return <Auth onLogin={() => setLoggedIn(true)} />;
+  }
+
+  if (!mode) {
+    return <ModePage onSelectMode={setMode} />;
+  }
+
   return (
-    <div className="App">
-      <header className="App-header">
-        <h1>Chat With An Agent</h1>
-      </header>
-      <main>
-        <ChatWindow />
-      </main>
+    <div>
+      {mode === "learn" && <LearnMode mode={mode} />}
+
+      {mode === "test" && (
+        <div>
+          <h1>Test Mode 🧠</h1>
+        </div>
+      )}
     </div>
   );
 }
-
-export default App;

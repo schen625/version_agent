@@ -11,7 +11,7 @@ const LanguageSelector = ({ translateFrom, translateTo, setTranslateFrom, setTra
   <div style={{ display: "flex", gap: "20px" }}>
     <label>
       From:{" "}
-      <select value={translateFrom} onChange={e => setTranslateFrom(e.target.value)} style ={{width: "130px"}}>
+      <select value={translateFrom} onChange={e => setTranslateFrom(e.target.value)} style={{ width: "130px" }}>
         {LANGUAGES.map(lang => (
           <option key={lang.code} value={lang.code}>{lang.name}</option>
         ))}
@@ -20,7 +20,7 @@ const LanguageSelector = ({ translateFrom, translateTo, setTranslateFrom, setTra
 
     <label>
       To:{" "}
-      <select value={translateTo} onChange={e => setTranslateTo(e.target.value)} style ={{width: "130px"}}>
+      <select value={translateTo} onChange={e => setTranslateTo(e.target.value)} style={{ width: "130px" }}>
         {LANGUAGES.filter(l => l.code !== "auto").map(lang => (
           <option key={lang.code} value={lang.code}>{lang.name}</option>
         ))}
