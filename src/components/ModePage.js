@@ -15,65 +15,141 @@ const ModePage = ({ onSelectMode }) => {
   return (
     <div
       style={{
-        textAlign: "center",
-        marginTop: "120px",
-        fontFamily: "Arial",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        height: "100vh",
+        background: "#fafafa",
+        fontFamily: "'Inter', 'Segoe UI', Arial, sans-serif",
       }}
     >
-      <h1>Select Mode</h1>
-
-      {/* LEARN MODE */}
-      <button
+      {/* Card */}
+      <div
         style={{
-          padding: "12px 20px",
-          margin: "10px",
-          fontSize: "16px",
-          cursor: "pointer",
+          background: "#fff",
+          border: "1px solid #e5e3f0",
+          borderRadius: "16px",
+          padding: "40px 48px",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: "12px",
+          minWidth: "320px",
+          boxShadow: "0 2px 12px rgba(127,119,221,0.07)",
         }}
-        onClick={() => onSelectMode("learn")}
       >
-        Learn Mode
-      </button>
-
-      {/* TEST MODE */}
-      <div style={{ marginTop: "20px" }}>
-        <button
+        <h1
           style={{
-            padding: "12px 20px",
-            fontSize: "16px",
-            cursor: "pointer",
+            fontSize: "20px",
+            fontWeight: "600",
+            color: "#1a1a1a",
+            marginBottom: "8px",
+            letterSpacing: "-0.01em",
           }}
-          onClick={() => setShowTestInput(true)}
         >
-          Test Mode
+          Select Mode
+        </h1>
+
+        {/* Learn Mode */}
+        <button
+          onClick={() => onSelectMode("learn")}
+          style={{
+            width: "100%",
+            padding: "12px 20px",
+            fontSize: "14px",
+            fontWeight: "500",
+            cursor: "pointer",
+            background: "#7F77DD",
+            color: "#fff",
+            border: "none",
+            borderRadius: "10px",
+            transition: "background 0.15s",
+          }}
+          onMouseEnter={e => e.target.style.background = "#6960c8"}
+          onMouseLeave={e => e.target.style.background = "#7F77DD"}
+        >
+          📖 Learn Mode
         </button>
-      </div>
 
-      {/* PASSWORD INPUT */}
-      {showTestInput && (
-        <div style={{ marginTop: "20px" }}>
-          <input
-            type="password"
-            placeholder="Enter Test Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            style={{
-              padding: "10px",
-              marginRight: "10px",
-            }}
-          />
+        {/* Test Mode */}
+        <button
+          onClick={() => setShowTestInput(true)}
+          style={{
+            width: "100%",
+            padding: "12px 20px",
+            fontSize: "14px",
+            fontWeight: "500",
+            cursor: "pointer",
+            background: "#f7f6fc",
+            color: "#534AB7",
+            border: "1px solid #dbd8f5",
+            borderRadius: "10px",
+            transition: "background 0.15s, border-color 0.15s",
+          }}
+          onMouseEnter={e => {
+            e.target.style.background = "#EEEDFE";
+            e.target.style.borderColor = "#AFA9EC";
+          }}
+          onMouseLeave={e => {
+            e.target.style.background = "#f7f6fc";
+            e.target.style.borderColor = "#dbd8f5";
+          }}
+        >
+          ✏️ Test Mode
+        </button>
 
-          <button
-            onClick={handleTestAccess}
+        {/* Test Mode Password */}
+        {showTestInput && (
+          <div
             style={{
-              padding: "10px 15px",
-              cursor: "pointer",
+              width: "100%",
+              marginTop: "4px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "8px",
             }}
           >
-            Enter
-          </button>
-        </div>
-      )}
+            <input
+              type="password"
+              placeholder="Enter test password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleTestAccess()}
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                fontSize: "14px",
+                border: "1px solid #dbd8f5",
+                borderRadius: "10px",
+                outline: "none",
+                background: "#f7f6fc",
+                color: "#1a1a1a",
+                fontFamily: "inherit",
+              }}
+            />
+            <button
+              onClick={handleTestAccess}
+              style={{
+                width: "100%",
+                padding: "10px",
+                fontSize: "14px",
+                fontWeight: "500",
+                cursor: "pointer",
+                background: "#534AB7",
+                color: "#fff",
+                border: "none",
+                borderRadius: "10px",
+                transition: "background 0.15s",
+              }}
+              onMouseEnter={e => e.target.style.background = "#3C3489"}
+              onMouseLeave={e => e.target.style.background = "#534AB7"}
+            >
+              Enter
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 };

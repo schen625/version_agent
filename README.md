@@ -1,12 +1,18 @@
 # How to start
 Start the backend:
-    cd into server
-    npm start 
+- cd into server
+- npm start 
 
 Start frontend:
-    in main repo 
-    npm start
+- in main repo 
+- npm start
 
+Make sure to have .env file with these items defined in it
+- API_KEY
+- MONGO_URI
+- JWT_SECRET 
+
+To access the Test Mode, the password is: HCI2026
 
 # Getting Started with Create React App
 

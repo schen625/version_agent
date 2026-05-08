@@ -3,7 +3,6 @@ import express from "express";
 import cors from "cors";
 import mongoose from "mongoose";
 import authRoutes from "./routes/auth.js";
-import User from "./models/User.js";
 import { GoogleGenAI } from "@google/genai";
 
 const app = express();
@@ -20,6 +19,7 @@ const sessionSchema = new mongoose.Schema({
   userId: String,
   mode: String,
   title: String,
+  summary: String,
   vocab: [
     {
       word: String,
@@ -29,6 +29,7 @@ const sessionSchema = new mongoose.Schema({
   sentences: [
     {
       sentence: String,
+      translation: String,
     }
   ],
   createdAt: { type: Date, default: Date.now },
@@ -56,20 +57,26 @@ async function generateSessionSummary(messages) {
     .map(m => `${m.role}: ${m.original}`)
     .join("\n");
 
-  const prompt = `return just JSON with this information
-  {
-  "title": "short summary of the conversation",
+  const prompt = `return just JSON with this information:
+{
+  "title": "short summary title (2-4 words)",
+  "summary": "1 sentence summary",
   "vocab": [
     { "word": "word", "translation": "meaning" }
   ],
   "sentences": [
-    "sentences from conversation"
+    {
+      "sentence": "sentence from conversation",
+      "translation": "translation of sentence"
+    }
   ]
 }
 
 Criteria:
-- I want 5 wvocab words
-- I want 5 sentences and sentences must come straight form the conversation and relate to the 5 words
+- I want 5 vocab words
+- I want 5 sentences
+- sentences MUST come from conversation
+- each sentence MUST have translation
 
 Conversation:
 ${convoText}
@@ -90,6 +97,7 @@ ${convoText}
 
     return {
       title: "Conversation Practice",
+      summary: "No summary available",
       vocab: [],
       sentences: []
     };
@@ -119,8 +127,12 @@ app.post("/api/session/end", async (req, res) => {
 
     const summary = await generateSessionSummary(session.messages);
     session.title = summary.title;
+    session.summary = summary.summary;
     session.vocab = summary.vocab;
-    session.sentences = summary.sentences.map(s => ({ sentence: s }));
+    session.sentences = summary.sentences.map(s => ({
+      sentence: s.sentence,
+      translation: s.translation
+    }));
     session.endedAt = new Date();
 
     await session.save();
@@ -156,7 +168,33 @@ app.post("/api/session/message", async (req, res) => {
     });
 
     const translatedUserMessage = translationRes.text.trim();
-    const agentPrompt = `User said (in ${translateFrom}): "${message}". Respond naturally in ${translateTo}.`;
+    const agentPrompt = `
+    You are a casual conversation partner helping someone practice a language.
+
+    CRITICAL RULES:
+    - Respond with ONLY ONE message
+    - Do NOT give multiple options
+    - Do NOT use bullet points
+    - Do NOT explain your answer
+    - Do NOT correct grammar unless asked
+    - Do NOT include notes or meta comments
+    - Keep it natural and conversational
+    - Keep it to one paragraph MAX
+    - Always continue the conversation
+
+    - Absolutely NEVER output lists, bullet points, or multiple versions
+    - If you feel multiple answers are possible, choose the BEST single one
+
+    Format:
+    One short paragraph only.
+    No formatting.
+    No markdown.
+
+    User said (in ${translateFrom}):
+    "${message}"
+
+    Respond in ${translateTo}.
+    `;
     const agentRes = await client.models.generateContent({
       model: "gemini-3.1-flash-lite-preview",
       contents: [{ role: "user", parts: [{ text: agentPrompt }] }]
