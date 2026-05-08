@@ -8,7 +8,7 @@ router.post("/signup", async (req, res) => {
   try {
     const { username, password } = req.body;
 
-    const exisåts = await User.findOne({ username });
+    const exists = await User.findOne({ username });
     if (exists) {
       return res.status(400).json({ error: "Username already taken" });
     }

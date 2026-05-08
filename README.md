@@ -10,7 +10,7 @@ Start frontend:
 Make sure to have .env file with these items defined in it
 - API_KEY
 - MONGO_URI
-- JWT_SECRET 
+- JWT_SECRET (You can set this to anything)
 
 To access the Test Mode, the password is: HCI2026
 
