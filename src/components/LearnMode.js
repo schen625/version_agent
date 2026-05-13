@@ -511,34 +511,42 @@ const LearnMode = ({ mode, onBack }) => {
                   {!activitiesStarted && (
                     <>
                       {/* List Vocab */}
-                      <SectionDivider emoji="📚" title="Vocabulary" />
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
-                        {vocab.map((v) => (
-                          <div key={v.word} style={{
-                            ...glassCard, padding: "8px 16px",
-                            display: "flex", alignItems: "center", gap: 8,
-                          }}>
-                            <span style={{ fontWeight: 800, color: C.textMain, fontSize: "0.9rem" }}>{v.word}</span>
-                            <span style={{ color: C.accentPurple, fontWeight: 700 }}>→</span>
-                            <span style={{ fontWeight: 700, color: C.textSub, fontSize: "0.88rem" }}>{v.translation}</span>
+                      {vocab.length > 0 && (
+                        <>
+                          <SectionDivider emoji="📚" title="Vocabulary" />
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+                            {vocab.map((v) => (
+                              <div key={v.word} style={{
+                                ...glassCard, padding: "8px 16px",
+                                display: "flex", alignItems: "center", gap: 8,
+                              }}>
+                                <span style={{ fontWeight: 800, color: C.textMain, fontSize: "0.9rem" }}>{v.word}</span>
+                                <span style={{ color: C.accentPurple, fontWeight: 700 }}>→</span>
+                                <span style={{ fontWeight: 700, color: C.textSub, fontSize: "0.88rem" }}>{v.translation}</span>
+                              </div>
+                            ))}
                           </div>
-                        ))}
-                      </div>
+                        </>
+                      )}
 
                       {/* Sentences */}
-                      <SectionDivider emoji="🧠" title="Sentences" />
-                      {sentences.map((s, i) => {
-                        const hasTranslation =
-                          s.translation && typeof s.translation === "string" && s.translation.trim() !== "";
-                        return (
-                          <div key={i} style={{ marginBottom: 14 }}>
-                            <div style={{ fontWeight: 700 }}>{s.sentence}</div>
-                            <div style={{ fontSize: "0.82rem", color: "#9e8cc0", marginTop: 4 }}>
-                              {hasTranslation ? s.translation : "⚠️ No translation available"}
-                            </div>
-                          </div>
-                        );
-                      })}
+                      {sentences.length > 0 && (
+                        <>
+                          <SectionDivider emoji="🧠" title="Sentences" />
+                          {sentences.map((s, i) => {
+                            const hasTranslation =
+                              s.translation && typeof s.translation === "string" && s.translation.trim() !== "";
+                            return (
+                              <div key={i} style={{ marginBottom: 14 }}>
+                                <div style={{ fontWeight: 700 }}>{s.sentence}</div>
+                                <div style={{ fontSize: "0.82rem", color: "#9e8cc0", marginTop: 4 }}>
+                                  {hasTranslation ? s.translation : "⚠️ No translation available"}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </>
+                      )}
 
                       {/* Start Activities CTA */}
                       <div style={{
