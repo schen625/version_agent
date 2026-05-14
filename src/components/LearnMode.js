@@ -94,7 +94,7 @@ const SectionDivider = ({ emoji, title }) => (
   </div>
 );
 
-const LearnMode = ({ mode }) => {
+const LearnMode = ({ mode, onBack }) => {
   const [tab, setTab] = useState("chat");
   const [sessions, setSessions] = useState([]);
   const [selectedSession, setSelectedSession] = useState(null);
@@ -296,11 +296,41 @@ const LearnMode = ({ mode }) => {
       {/* Top Navigation (Chat/Learn) */}
       <div style={{
         display: "flex",
+        alignItems: "stretch",
         background: "rgba(255,255,255,0.65)",
         backdropFilter: "blur(16px)",
         borderBottom: "2px solid rgba(255,255,255,0.9)",
         boxShadow: "0 2px 12px rgba(180,160,220,0.1)",
       }}>
+        {/* Back to mode selection */}
+        {onBack && (
+          <button
+            onClick={onBack}
+            title="Back to mode selection"
+            style={{
+              padding: "0 18px",
+              background: "none",
+              border: "none",
+              borderRight: `1.5px solid rgba(201,179,245,0.2)`,
+              borderBottom: "3px solid transparent",
+              color: C.textMuted,
+              fontSize: "0.82rem",
+              fontWeight: 800,
+              fontFamily: "'Nunito', sans-serif",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              transition: "color 0.15s",
+              whiteSpace: "nowrap",
+            }}
+            onMouseEnter={e => e.currentTarget.style.color = C.textSub}
+            onMouseLeave={e => e.currentTarget.style.color = C.textMuted}
+          >
+            ← Mode
+          </button>
+        )}
+
         {[
           { key: "chat", label: "💬 Chat" },
           { key: "learn", label: "📚 Learn" },
