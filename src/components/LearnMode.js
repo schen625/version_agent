@@ -94,7 +94,7 @@ const SectionDivider = ({ emoji, title }) => (
   </div>
 );
 
-const LearnMode = ({ mode }) => {
+const LearnMode = ({ mode, onBack }) => {
   const [tab, setTab] = useState("chat");
   const [sessions, setSessions] = useState([]);
   const [selectedSession, setSelectedSession] = useState(null);
@@ -106,6 +106,7 @@ const LearnMode = ({ mode }) => {
   const [mcqOrder, setMcqOrder] = useState([]);
   const [fillOrder, setFillOrder] = useState([]);
   const [matchOrder, setMatchOrder] = useState([]);
+  const [activitiesStarted, setActivitiesStarted] = useState(false);
 
   const userId = localStorage.getItem("userId");
 
@@ -132,7 +133,12 @@ const LearnMode = ({ mode }) => {
     setFillIndex(0); setFillAnswered({}); setFillDone(false); setFillMistakes(0);
   };
 
-  useEffect(() => { if (selectedSession) resetAll(); }, [selectedSession]);
+  useEffect(() => {
+    if (selectedSession) {
+      resetAll();
+      setActivitiesStarted(false);
+    }
+  }, [selectedSession]);
 
   // MCQ
   const [mcqIndex, setMcqIndex] = useState(0);
@@ -296,11 +302,41 @@ const LearnMode = ({ mode }) => {
       {/* Top Navigation (Chat/Learn) */}
       <div style={{
         display: "flex",
+        alignItems: "stretch",
         background: "rgba(255,255,255,0.65)",
         backdropFilter: "blur(16px)",
         borderBottom: "2px solid rgba(255,255,255,0.9)",
         boxShadow: "0 2px 12px rgba(180,160,220,0.1)",
       }}>
+        {/* Back to mode selection */}
+        {onBack && (
+          <button
+            onClick={onBack}
+            title="Back to mode selection"
+            style={{
+              padding: "0 18px",
+              background: "none",
+              border: "none",
+              borderRight: `1.5px solid rgba(201,179,245,0.2)`,
+              borderBottom: "3px solid transparent",
+              color: C.textMuted,
+              fontSize: "0.82rem",
+              fontWeight: 800,
+              fontFamily: "'Nunito', sans-serif",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              transition: "color 0.15s",
+              whiteSpace: "nowrap",
+            }}
+            onMouseEnter={e => e.currentTarget.style.color = C.textSub}
+            onMouseLeave={e => e.currentTarget.style.color = C.textMuted}
+          >
+            ← Mode
+          </button>
+        )}
+
         {[
           { key: "chat", label: "💬 Chat" },
           { key: "learn", label: "📚 Learn" },
@@ -471,143 +507,228 @@ const LearnMode = ({ mode }) => {
                 </div>
               ) : (
                 <>
-                  {/* List Vocab */}
-                  <SectionDivider emoji="📚" title="Vocabulary" />
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
-                    {vocab.map((v) => (
-                      <div key={v.word} style={{
-                        ...glassCard, padding: "8px 16px",
-                        display: "flex", alignItems: "center", gap: 8,
+                  {/* ── STUDY PHASE: vocab + sentences ── */}
+                  {!activitiesStarted && (
+                    <>
+                      {/* List Vocab */}
+                      {vocab.length > 0 && (
+                        <>
+                          <SectionDivider emoji="📚" title="Vocabulary" />
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+                            {vocab.map((v) => (
+                              <div key={v.word} style={{
+                                ...glassCard, padding: "8px 16px",
+                                display: "flex", alignItems: "center", gap: 8,
+                              }}>
+                                <span style={{ fontWeight: 800, color: C.textMain, fontSize: "0.9rem" }}>{v.word}</span>
+                                <span style={{ color: C.accentPurple, fontWeight: 700 }}>→</span>
+                                <span style={{ fontWeight: 700, color: C.textSub, fontSize: "0.88rem" }}>{v.translation}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )}
+
+                      {/* Sentences */}
+                      {sentences.length > 0 && (
+                        <>
+                          <SectionDivider emoji="🧠" title="Sentences" />
+                          {sentences.map((s, i) => {
+                            const hasTranslation =
+                              s.translation && typeof s.translation === "string" && s.translation.trim() !== "";
+                            return (
+                              <div key={i} style={{ marginBottom: 14 }}>
+                                <div style={{ fontWeight: 700 }}>{s.sentence}</div>
+                                <div style={{ fontSize: "0.82rem", color: "#9e8cc0", marginTop: 4 }}>
+                                  {hasTranslation ? s.translation : "⚠️ No translation available"}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </>
+                      )}
+
+                      {/* Start Activities CTA */}
+                      <div style={{
+                        margin: "36px 0 40px",
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        gap: 10,
                       }}>
-                        <span style={{ fontWeight: 800, color: C.textMain, fontSize: "0.9rem" }}>{v.word}</span>
-                        <span style={{ color: C.accentPurple, fontWeight: 700 }}>→</span>
-                        <span style={{ fontWeight: 700, color: C.textSub, fontSize: "0.88rem" }}>{v.translation}</span>
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Sentences */}
-                  <SectionDivider emoji="🧠" title="Sentences" />
-                  {sentences.map((s, i) => {
-                    const hasTranslation =
-                      s.translation && typeof s.translation === "string" && s.translation.trim() !== "";
-                    return (
-                      <div key={i} style={{ marginBottom: 14 }}>
-                        <div style={{ fontWeight: 700 }}>{s.sentence}</div>
-                        <div style={{ fontSize: "0.82rem", color: "#9e8cc0", marginTop: 4 }}>
-                          {hasTranslation ? s.translation : "⚠️ No translation available"}
-                        </div>
-                      </div>
-                    );
-                  })}
-
-                  {/* MCQ */}
-                  <SectionDivider emoji="🎯" title="Vocab Quiz" />
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-                    <RestartBtn onClick={resetAll} />
-                    <span style={{ fontSize: "0.78rem", color: C.textMuted, fontWeight: 700 }}>
-                      {mcqDone ? "Complete!" : `${mcqIndex + 1} / ${vocab.length}`}
-                    </span>
-                  </div>
-                  {!mcqDone ? (
-                    <div style={{ ...glassCard, padding: "22px 26px" }}>
-                      <p style={{ margin: "0 0 16px", fontSize: "1.15rem", fontWeight: 900, color: C.textMain }}>
-                        {vocab[currentMCQIndex]?.word}
-                      </p>
-                      <p style={{ margin: "0 0 14px", fontSize: "0.82rem", color: C.textMuted, fontWeight: 700 }}>
-                        Pick the correct translation 👇
-                      </p>
-                      <div style={{ display: "flex", flexWrap: "wrap" }}>
-                        {mcqOptions.map(o => (
-                          <QuizBtn key={o} state={mcqAnswered[o]} onClick={() => answerMCQ(o)}>{o}</QuizBtn>
-                        ))}
-                      </div>
-                    </div>
-                  ) : <DoneState />}
-
-                  {/* Matching */}
-                  <SectionDivider emoji="🔗" title="Matching" />
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-                    <RestartBtn onClick={resetAll} />
-                  </div>
-                  {!matchDone ? (
-                    <div style={{ display: "flex", gap: 20 }}>
-                      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
-                        {leftWords.map(v => {
-                          const st = matchState[v.word];
-                          const sel = matchSelected?.word === v.word;
-                          return (
-                            <div key={v.word} onClick={() => handleMatch(v.word, "left")} style={{
-                              padding: "11px 18px", borderRadius: 14, cursor: "pointer",
-                              pointerEvents: matchState[v.word] === "correct" ? "none" : "auto",
-                              fontWeight: 800, fontSize: "0.9rem",
-                              background: st === "correct" ? "rgba(181,234,215,0.5)"
-                                : st === "wrong" ? "rgba(255,183,197,0.5)"
-                                  : sel ? "rgba(201,179,245,0.3)" : "rgba(255,255,255,0.75)",
-                              border: `2px solid ${st === "correct" ? "rgba(127,201,169,0.5)"
-                                : st === "wrong" ? "rgba(255,143,163,0.5)"
-                                  : sel ? "rgba(201,179,245,0.6)" : C.border}`,
-                              color: st === "correct" ? "#3a9e75" : st === "wrong" ? "#cc4466" : C.textMain,
-                              boxShadow: sel ? "0 4px 14px rgba(201,179,245,0.3)" : "0 2px 8px rgba(180,160,220,0.1)",
-                              transition: "all 0.15s",
-                            }}>
-                              {v.word}
-                            </div>
-                          );
-                        })}
-                      </div>
-                      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
-                        {rightWords.map(v => {
-                          const st = matchState[v.translation];
-                          const sel = matchSelected?.word === v.translation;
-                          return (
-                            <div key={v.translation} onClick={() => handleMatch(v.translation, "right")} style={{
-                              padding: "11px 18px", borderRadius: 14, cursor: "pointer",
-                              pointerEvents: matchState[v.translation] === "correct" ? "none" : "auto",
-                              fontWeight: 700, fontSize: "0.88rem",
-                              background: st === "correct" ? "rgba(181,234,215,0.5)"
-                                : st === "wrong" ? "rgba(255,183,197,0.5)"
-                                  : sel ? "rgba(168,216,234,0.35)" : "rgba(255,255,255,0.75)",
-                              border: `2px solid ${st === "correct" ? "rgba(127,201,169,0.5)"
-                                : st === "wrong" ? "rgba(255,143,163,0.5)"
-                                  : sel ? "rgba(168,216,234,0.7)" : C.border}`,
-                              color: st === "correct" ? "#3a9e75" : st === "wrong" ? "#cc4466" : C.textSub,
-                              transition: "all 0.15s",
-                            }}>
-                              {v.translation}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ) : <DoneState />}
-
-                  {/* Fill in The Blank */}
-                  <SectionDivider emoji="✍️" title="Fill in the Blank" />
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-                    <RestartBtn onClick={resetAll} />
-                    <span style={{ fontSize: "0.78rem", color: C.textMuted, fontWeight: 700 }}>
-                      {fillDone ? "Complete!" : `${fillIndex + 1} / ${vocab.length}`}
-                    </span>
-                  </div>
-                  {!fillDone ? (
-                    <div style={{ ...glassCard, padding: "22px 26px", marginBottom: 40 }}>
-                      <p style={{ margin: "0 0 16px", fontSize: "1rem", lineHeight: 1.7, fontWeight: 700, color: C.textSub }}>
-                        {sentences[currentFillIndex]?.sentence?.replace(
-                          vocab[currentFillIndex]?.word,
-                          "______"
-                        )}
-                        <p style={{ fontSize: 12, color: "gray" }}>
-                          {sentences[currentFillIndex]?.translation}
+                        <p style={{
+                          margin: 0,
+                          fontSize: "0.82rem",
+                          color: C.textMuted,
+                          fontWeight: 700,
+                        }}>
+                          Studied the vocab? Time to test yourself!
                         </p>
-                      </p>
-                      <div style={{ display: "flex", flexWrap: "wrap" }}>
-                        {fillOptions.map(o => (
-                          <QuizBtn key={o} state={fillAnswered[o]} onClick={() => answerFill(o)}>{o}</QuizBtn>
-                        ))}
+                        <button
+                          onClick={() => setActivitiesStarted(true)}
+                          style={{
+                            padding: "14px 36px",
+                            fontSize: "1rem",
+                            fontWeight: 900,
+                            fontFamily: "'Nunito', sans-serif",
+                            background: "linear-gradient(135deg, #c9b3f5, #a8d8ea)",
+                            color: "white",
+                            border: "none",
+                            borderRadius: 18,
+                            cursor: "pointer",
+                            boxShadow: "0 6px 20px rgba(201,179,245,0.45)",
+                            transition: "transform 0.15s, box-shadow 0.15s",
+                            letterSpacing: "0.02em",
+                          }}
+                          onMouseEnter={e => {
+                            e.currentTarget.style.transform = "translateY(-2px)";
+                            e.currentTarget.style.boxShadow = "0 10px 28px rgba(201,179,245,0.55)";
+                          }}
+                          onMouseLeave={e => {
+                            e.currentTarget.style.transform = "translateY(0)";
+                            e.currentTarget.style.boxShadow = "0 6px 20px rgba(201,179,245,0.45)";
+                          }}
+                        >
+                          ✨ Start Activities
+                        </button>
                       </div>
-                    </div>
-                  ) : <DoneState />}
+                    </>
+                  )}
+
+                  {/* ── ACTIVITY PHASE: exercises only ── */}
+                  {activitiesStarted && (
+                    <>
+                      {/* Back to study link */}
+                      <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
+                        <button
+                          onClick={() => setActivitiesStarted(false)}
+                          style={{
+                            background: "none",
+                            border: "none",
+                            color: C.textMuted,
+                            fontSize: "0.78rem",
+                            fontWeight: 800,
+                            fontFamily: "'Nunito', sans-serif",
+                            cursor: "pointer",
+                            padding: "4px 0",
+                            transition: "color 0.15s",
+                          }}
+                          onMouseEnter={e => e.currentTarget.style.color = C.textSub}
+                          onMouseLeave={e => e.currentTarget.style.color = C.textMuted}
+                        >
+                          ← Back to study material
+                        </button>
+                      </div>
+
+                      {/* MCQ */}
+                      <SectionDivider emoji="🎯" title="Vocab Quiz" />
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                        <RestartBtn onClick={resetAll} />
+                        <span style={{ fontSize: "0.78rem", color: C.textMuted, fontWeight: 700 }}>
+                          {mcqDone ? "Complete!" : `${mcqIndex + 1} / ${vocab.length}`}
+                        </span>
+                      </div>
+                      {!mcqDone ? (
+                        <div style={{ ...glassCard, padding: "22px 26px" }}>
+                          <p style={{ margin: "0 0 16px", fontSize: "1.15rem", fontWeight: 900, color: C.textMain }}>
+                            {vocab[currentMCQIndex]?.word}
+                          </p>
+                          <p style={{ margin: "0 0 14px", fontSize: "0.82rem", color: C.textMuted, fontWeight: 700 }}>
+                            Pick the correct translation 👇
+                          </p>
+                          <div style={{ display: "flex", flexWrap: "wrap" }}>
+                            {mcqOptions.map(o => (
+                              <QuizBtn key={o} state={mcqAnswered[o]} onClick={() => answerMCQ(o)}>{o}</QuizBtn>
+                            ))}
+                          </div>
+                        </div>
+                      ) : <DoneState />}
+
+                      {/* Matching */}
+                      <SectionDivider emoji="🔗" title="Matching" />
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                        <RestartBtn onClick={resetAll} />
+                      </div>
+                      {!matchDone ? (
+                        <div style={{ display: "flex", gap: 20 }}>
+                          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
+                            {leftWords.map(v => {
+                              const st = matchState[v.word];
+                              const sel = matchSelected?.word === v.word;
+                              return (
+                                <div key={v.word} onClick={() => handleMatch(v.word, "left")} style={{
+                                  padding: "11px 18px", borderRadius: 14, cursor: "pointer",
+                                  pointerEvents: matchState[v.word] === "correct" ? "none" : "auto",
+                                  fontWeight: 800, fontSize: "0.9rem",
+                                  background: st === "correct" ? "rgba(181,234,215,0.5)"
+                                    : st === "wrong" ? "rgba(255,183,197,0.5)"
+                                      : sel ? "rgba(201,179,245,0.3)" : "rgba(255,255,255,0.75)",
+                                  border: `2px solid ${st === "correct" ? "rgba(127,201,169,0.5)"
+                                    : st === "wrong" ? "rgba(255,143,163,0.5)"
+                                      : sel ? "rgba(201,179,245,0.6)" : C.border}`,
+                                  color: st === "correct" ? "#3a9e75" : st === "wrong" ? "#cc4466" : C.textMain,
+                                  boxShadow: sel ? "0 4px 14px rgba(201,179,245,0.3)" : "0 2px 8px rgba(180,160,220,0.1)",
+                                  transition: "all 0.15s",
+                                }}>
+                                  {v.word}
+                                </div>
+                              );
+                            })}
+                          </div>
+                          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
+                            {rightWords.map(v => {
+                              const st = matchState[v.translation];
+                              const sel = matchSelected?.word === v.translation;
+                              return (
+                                <div key={v.translation} onClick={() => handleMatch(v.translation, "right")} style={{
+                                  padding: "11px 18px", borderRadius: 14, cursor: "pointer",
+                                  pointerEvents: matchState[v.translation] === "correct" ? "none" : "auto",
+                                  fontWeight: 700, fontSize: "0.88rem",
+                                  background: st === "correct" ? "rgba(181,234,215,0.5)"
+                                    : st === "wrong" ? "rgba(255,183,197,0.5)"
+                                      : sel ? "rgba(168,216,234,0.35)" : "rgba(255,255,255,0.75)",
+                                  border: `2px solid ${st === "correct" ? "rgba(127,201,169,0.5)"
+                                    : st === "wrong" ? "rgba(255,143,163,0.5)"
+                                      : sel ? "rgba(168,216,234,0.7)" : C.border}`,
+                                  color: st === "correct" ? "#3a9e75" : st === "wrong" ? "#cc4466" : C.textSub,
+                                  transition: "all 0.15s",
+                                }}>
+                                  {v.translation}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ) : <DoneState />}
+
+                      {/* Fill in The Blank */}
+                      <SectionDivider emoji="✍️" title="Fill in the Blank" />
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                        <RestartBtn onClick={resetAll} />
+                        <span style={{ fontSize: "0.78rem", color: C.textMuted, fontWeight: 700 }}>
+                          {fillDone ? "Complete!" : `${fillIndex + 1} / ${vocab.length}`}
+                        </span>
+                      </div>
+                      {!fillDone ? (
+                        <div style={{ ...glassCard, padding: "22px 26px", marginBottom: 40 }}>
+                          <p style={{ margin: "0 0 16px", fontSize: "1rem", lineHeight: 1.7, fontWeight: 700, color: C.textSub }}>
+                            {sentences[currentFillIndex]?.sentence?.replace(
+                              vocab[currentFillIndex]?.word,
+                              "______"
+                            )}
+                            <p style={{ fontSize: 12, color: "gray" }}>
+                              {sentences[currentFillIndex]?.translation}
+                            </p>
+                          </p>
+                          <div style={{ display: "flex", flexWrap: "wrap" }}>
+                            {fillOptions.map(o => (
+                              <QuizBtn key={o} state={fillAnswered[o]} onClick={() => answerFill(o)}>{o}</QuizBtn>
+                            ))}
+                          </div>
+                        </div>
+                      ) : <DoneState />}
+                    </>
+                  )}
                 </>
               )}
             </div>
