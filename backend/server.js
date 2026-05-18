@@ -245,6 +245,51 @@ app.get("/api/session/:sessionId", async (req, res) => {
   res.json(session);
 });
 
+app.get("/api/topics/suggest", async (req, res) => {
+  try {
+    const prompt = `Generate 5 conversation topic suggestions for a language learner.
+
+Criteria:
+- Topics MUST be applicable to everyday life (common, relatable situations)
+- Topics MUST be beginner-friendly (simple, easy to talk about, no abstract or technical subjects)
+- Each topic should be a short phrase (2-5 words)
+- Vary the topics each time, don't repeat the same ones
+- Avoid heavy or sensitive subjects
+
+Return ONLY a JSON array of strings. No explanation, no markdown, no code fences.
+
+Example format: ["Ordering coffee", "My favorite food", "Weekend plans", "Talking about pets", "Describing the weather"]`;
+
+    const result = await client.models.generateContent({
+      model: "gemini-3.1-flash-lite-preview",
+      contents: [{ role: "user", parts: [{ text: prompt }] }]
+    });
+
+    let text = result.text.trim();
+    text = text.replace(/```json/g, "").replace(/```/g, "").trim();
+
+    let topics;
+    try {
+      topics = JSON.parse(text);
+      if (!Array.isArray(topics)) throw new Error("Not an array");
+    } catch (err) {
+      console.error("Topic JSON error:", text);
+      topics = [
+        "Ordering coffee",
+        "My favorite food",
+        "Weekend plans",
+        "Talking about pets",
+        "Describing the weather"
+      ];
+    }
+
+    res.json({ topics });
+  } catch (err) {
+    console.error("TOPIC SUGGEST ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/api/user/:userId/sessions", async (req, res) => {
   const sessions = await Session.find({ userId: req.params.userId });
   res.json(sessions);
