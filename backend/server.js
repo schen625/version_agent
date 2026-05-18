@@ -247,22 +247,42 @@ app.get("/api/session/:sessionId", async (req, res) => {
 
 app.get("/api/topics/suggest", async (req, res) => {
   try {
+    const themePool = [
+      "daily routines", "food and meals", "shopping",
+      "family and friends", "hobbies and free time", "weather and seasons",
+      "travel and places", "home life", "weekend plans",
+      "celebrations and holidays", "transportation", "pets and animals",
+      "music and movies", "sports and exercise", "school and work life",
+      "cooking", "describing people", "talking about the past",
+      "talking about the future", "feelings and moods", "city vs countryside",
+      "favorites and preferences", "asking for directions", "making plans with a friend"
+    ];
+    const shuffled = [...themePool].sort(() => Math.random() - 0.5);
+    const focus = shuffled.slice(0, 3);
+    const seed = Math.floor(Math.random() * 1000000);
+
     const prompt = `Generate 5 conversation topic suggestions for a language learner.
 
 Criteria:
 - Topics MUST be applicable to everyday life (common, relatable situations)
 - Topics MUST be beginner-friendly (simple, easy to talk about, no abstract or technical subjects)
 - Each topic should be a short phrase (2-5 words)
-- Vary the topics each time, don't repeat the same ones
 - Avoid heavy or sensitive subjects
+- Be CREATIVE and DIFFERENT from typical examples — surprise me
 
-Return ONLY a JSON array of strings. No explanation, no markdown, no code fences.
+For this batch, draw inspiration loosely from these themes (you don't need to use all of them, and you can blend or extend them): ${focus.join(", ")}.
 
-Example format: ["Ordering coffee", "My favorite food", "Weekend plans", "Talking about pets", "Describing the weather"]`;
+Variation seed: ${seed} (use this to ensure your output differs from previous calls).
+
+Return ONLY a JSON array of 5 strings. No explanation, no markdown, no code fences.`;
 
     const result = await client.models.generateContent({
       model: "gemini-3.1-flash-lite-preview",
-      contents: [{ role: "user", parts: [{ text: prompt }] }]
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      config: {
+        temperature: 1.4,
+        topP: 0.95
+      }
     });
 
     let text = result.text.trim();
