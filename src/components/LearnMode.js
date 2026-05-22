@@ -74,7 +74,7 @@ const DoneState = () => (
     borderRadius: 16, padding: "16px 22px", color: "#3a9e75",
     fontWeight: 800, fontSize: "0.92rem",
   }}>
-    🎉 All done — you're amazing!
+    🎉 All done!
   </div>
 );
 
@@ -104,8 +104,7 @@ const LearnMode = ({ mode }) => {
   const [mcqMistakes, setMcqMistakes] = useState(0);
   const [fillMistakes, setFillMistakes] = useState(0);
   const [mcqOrder, setMcqOrder] = useState([]);
-  const [fillOrder, setFillOrder] = useState([]);
-  const [matchOrder, setMatchOrder] = useState([]);
+  const [fillSubset, setFillSubset] = useState([]);
 
   const userId = localStorage.getItem("userId");
 
@@ -119,20 +118,34 @@ const LearnMode = ({ mode }) => {
 
   const vocab = selectedSession?.vocab || [];
   const sentences = selectedSession?.sentences || [];
+  const learnQuestions = selectedSession?.learnQuestions || [];
 
   const resetAll = () => {
-    const indices = vocab.map((_, i) => i);
-
-    setMcqOrder(shuffle(indices));
-    setFillOrder(shuffle(indices));
-    setMatchOrder(shuffle(indices));
-
+    const vocabIndices = vocab.map((_, i) => i);
+    const fillIndices = learnQuestions.map((_, i) => i);
+    setMcqOrder(shuffle(vocabIndices));
+    setFillSubset(shuffle(fillIndices).slice(0, 5));
     setMcqIndex(0); setMcqAnswered({}); setMcqDone(false); setMcqMistakes(0);
-    setMatchState({}); setMatchSelected(null); setMatchDone(false);
     setFillIndex(0); setFillAnswered({}); setFillDone(false); setFillMistakes(0);
   };
 
   useEffect(() => { if (selectedSession) resetAll(); }, [selectedSession]);
+
+  const updateWordStats = async (word, isCorrect) => {
+    if (!word) return;
+
+    await fetch("http://localhost:3001/api/word-stat/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId, word, isCorrect })
+    });
+  };
+
+  const errorRate = (stat) => {
+    const total = stat.correct + stat.wrong;
+    if (total === 0) return 0;
+    return stat.wrong / total;
+  };
 
   // MCQ
   const [mcqIndex, setMcqIndex] = useState(0);
@@ -158,6 +171,7 @@ const LearnMode = ({ mode }) => {
 
   const currentMCQIndex = mcqOrder[mcqIndex];
   const answerMCQ = (opt) => {
+    const word = vocab[currentMCQIndex]?.word;
     const correct = vocab[currentMCQIndex]?.translation;
     const isCorrect = opt === correct;
 
@@ -168,13 +182,13 @@ const LearnMode = ({ mode }) => {
 
     if (!isCorrect) {
       setMcqMistakes(m => m + 1);
-      return; 
+      return;
     }
 
     setTimeout(() => {
-      if (mcqIndex + 1 >= vocab.length) {
+      if (mcqIndex + 1 >= mcqOrder.length) {
         if (mcqMistakes === 0) {
-          setMcqDone(true); 
+          setMcqDone(true);
         } else {
           setMcqIndex(0);
           setMcqMistakes(0);
@@ -186,42 +200,14 @@ const LearnMode = ({ mode }) => {
     }, 400);
   };
 
-  // Matching
-  const [matchSelected, setMatchSelected] = useState(null);
-  const [matchState, setMatchState] = useState({});
-  const [matchDone, setMatchDone] = useState(false);
-  const [leftWords, setLeftWords] = useState([]);
-  const [rightWords, setRightWords] = useState([]);
+  const resetMCQ = () => {
+    const vocabIndices = vocab.map((_, i) => i);
 
-  useEffect(() => {
-    const ordered = matchOrder.map(i => vocab[i]);
-    setLeftWords(shuffle(ordered));
-    setRightWords(shuffle(ordered));
-  }, [matchOrder, vocab]);
-
-  const handleMatch = (word, side) => {
-    if (matchState[word] === "correct") return;
-    if (!matchSelected) { setMatchSelected({ word, side }); return; }
-    const first = matchSelected, second = { word, side };
-    if (first.side === second.side) { setMatchSelected(null); return; }
-    const left = first.side === "left" ? first : second;
-    const right = first.side === "right" ? first : second;
-    const correct = vocab.find(v => v.word === left.word)?.translation;
-    const isCorrect = correct === right.word;
-    setMatchState(p => ({
-      ...p, [left.word]: isCorrect ? "correct" : "wrong",
-      [right.word]: isCorrect ? "correct" : "wrong",
-    }));
-    setMatchSelected(null);
-    if (isCorrect) {
-      const total = Object.values({ ...matchState, [left.word]: "correct", [right.word]: "correct" })
-        .filter(v => v === "correct").length;
-      if (total / 2 === vocab.length) setMatchDone(true);
-    } else {
-      setTimeout(() => setMatchState(p => {
-        const c = { ...p }; delete c[left.word]; delete c[right.word]; return c;
-      }), 600);
-    }
+    setMcqOrder(shuffle(vocabIndices));
+    setMcqIndex(0);
+    setMcqAnswered({});
+    setMcqDone(false);
+    setMcqMistakes(0);
   };
 
   // Fill
@@ -230,27 +216,29 @@ const LearnMode = ({ mode }) => {
   const [fillDone, setFillDone] = useState(false);
 
   useEffect(() => { setFillAnswered({}); }, [fillIndex]);
+  const currentQuestion = learnQuestions[fillSubset[fillIndex]];
 
-  const currentFillIndex = fillOrder[fillIndex];
   const fillOptions = useMemo(() => {
-    if (!vocab.length) return [];
+    if (!currentQuestion) return [];
 
-    const currentIndex = fillOrder[fillIndex];
-    const correct = vocab[currentIndex]?.word;
-
-    const wrong = shuffle(
+    const wrongAnswers = shuffle(
       vocab
-        .filter((_, i) => i !== currentIndex)
+        .filter(v => v.word !== currentQuestion.answer)
         .map(v => v.word)
-    ).slice(0, 4);
-
-    return shuffle([correct, ...wrong]);
-  }, [fillIndex, vocab, fillOrder]);
+    ).slice(0, 3);
+    return shuffle([
+      currentQuestion.answer,
+      ...wrongAnswers
+    ]);
+  }, [currentQuestion, vocab]);
 
   const answerFill = (opt) => {
-    const currentFillIndex = fillOrder[fillIndex]; 
-    const correct = vocab[currentFillIndex]?.word;
+    if (!currentQuestion) return;
+
+    const correct = currentQuestion.answer;
     const isCorrect = opt === correct;
+    const word = currentQuestion.answer;
+    updateWordStats(word, isCorrect);
 
     setFillAnswered(p => ({
       ...p,
@@ -263,7 +251,7 @@ const LearnMode = ({ mode }) => {
     }
 
     setTimeout(() => {
-      if (fillIndex + 1 >= vocab.length) {
+      if (fillIndex + 1 >= fillSubset.length) {
         if (fillMistakes === 0) {
           setFillDone(true);
         } else {
@@ -275,6 +263,15 @@ const LearnMode = ({ mode }) => {
         setFillIndex(i => i + 1);
       }
     }, 400);
+  };
+
+  const resetFill = () => {
+    const validQuestions = learnQuestions.filter(q => vocab.some(v => v.word === q.answer));
+    setFillSubset(shuffle(validQuestions.map((_, i) => i)).slice(0, 5));
+    setFillIndex(0);
+    setFillAnswered({});
+    setFillDone(false);
+    setFillMistakes(0);
   };
 
   const sortedSessions = [...sessions].sort(
@@ -504,9 +501,9 @@ const LearnMode = ({ mode }) => {
                   {/* MCQ */}
                   <SectionDivider emoji="🎯" title="Vocab Quiz" />
                   <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-                    <RestartBtn onClick={resetAll} />
+                    <RestartBtn onClick={resetMCQ} />
                     <span style={{ fontSize: "0.78rem", color: C.textMuted, fontWeight: 700 }}>
-                      {mcqDone ? "Complete!" : `${mcqIndex + 1} / ${vocab.length}`}
+                      {mcqDone ? "Complete!" : `${mcqIndex + 1} / ${mcqOrder.length}`}
                     </span>
                   </div>
                   {!mcqDone ? (
@@ -525,82 +522,28 @@ const LearnMode = ({ mode }) => {
                     </div>
                   ) : <DoneState />}
 
-                  {/* Matching */}
-                  <SectionDivider emoji="🔗" title="Matching" />
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-                    <RestartBtn onClick={resetAll} />
-                  </div>
-                  {!matchDone ? (
-                    <div style={{ display: "flex", gap: 20 }}>
-                      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
-                        {leftWords.map(v => {
-                          const st = matchState[v.word];
-                          const sel = matchSelected?.word === v.word;
-                          return (
-                            <div key={v.word} onClick={() => handleMatch(v.word, "left")} style={{
-                              padding: "11px 18px", borderRadius: 14, cursor: "pointer",
-                              pointerEvents: matchState[v.word] === "correct" ? "none" : "auto",
-                              fontWeight: 800, fontSize: "0.9rem",
-                              background: st === "correct" ? "rgba(181,234,215,0.5)"
-                                : st === "wrong" ? "rgba(255,183,197,0.5)"
-                                  : sel ? "rgba(201,179,245,0.3)" : "rgba(255,255,255,0.75)",
-                              border: `2px solid ${st === "correct" ? "rgba(127,201,169,0.5)"
-                                : st === "wrong" ? "rgba(255,143,163,0.5)"
-                                  : sel ? "rgba(201,179,245,0.6)" : C.border}`,
-                              color: st === "correct" ? "#3a9e75" : st === "wrong" ? "#cc4466" : C.textMain,
-                              boxShadow: sel ? "0 4px 14px rgba(201,179,245,0.3)" : "0 2px 8px rgba(180,160,220,0.1)",
-                              transition: "all 0.15s",
-                            }}>
-                              {v.word}
-                            </div>
-                          );
-                        })}
-                      </div>
-                      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
-                        {rightWords.map(v => {
-                          const st = matchState[v.translation];
-                          const sel = matchSelected?.word === v.translation;
-                          return (
-                            <div key={v.translation} onClick={() => handleMatch(v.translation, "right")} style={{
-                              padding: "11px 18px", borderRadius: 14, cursor: "pointer",
-                              pointerEvents: matchState[v.translation] === "correct" ? "none" : "auto",
-                              fontWeight: 700, fontSize: "0.88rem",
-                              background: st === "correct" ? "rgba(181,234,215,0.5)"
-                                : st === "wrong" ? "rgba(255,183,197,0.5)"
-                                  : sel ? "rgba(168,216,234,0.35)" : "rgba(255,255,255,0.75)",
-                              border: `2px solid ${st === "correct" ? "rgba(127,201,169,0.5)"
-                                : st === "wrong" ? "rgba(255,143,163,0.5)"
-                                  : sel ? "rgba(168,216,234,0.7)" : C.border}`,
-                              color: st === "correct" ? "#3a9e75" : st === "wrong" ? "#cc4466" : C.textSub,
-                              transition: "all 0.15s",
-                            }}>
-                              {v.translation}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ) : <DoneState />}
-
                   {/* Fill in The Blank */}
                   <SectionDivider emoji="✍️" title="Fill in the Blank" />
                   <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-                    <RestartBtn onClick={resetAll} />
+                    <RestartBtn onClick={resetFill} />
                     <span style={{ fontSize: "0.78rem", color: C.textMuted, fontWeight: 700 }}>
-                      {fillDone ? "Complete!" : `${fillIndex + 1} / ${vocab.length}`}
+                      {fillDone ? "Complete!" : fillSubset.length ? `${fillIndex + 1} / ${fillSubset.length}` : "0 / 0"}
                     </span>
                   </div>
-                  {!fillDone ? (
+                  {fillSubset.length > 0 && !fillDone ? (
                     <div style={{ ...glassCard, padding: "22px 26px", marginBottom: 40 }}>
-                      <p style={{ margin: "0 0 16px", fontSize: "1rem", lineHeight: 1.7, fontWeight: 700, color: C.textSub }}>
-                        {sentences[currentFillIndex]?.sentence?.replace(
-                          vocab[currentFillIndex]?.word,
-                          "______"
-                        )}
-                        <p style={{ fontSize: 12, color: "gray" }}>
-                          {sentences[currentFillIndex]?.translation}
-                        </p>
-                      </p>
+                      <div style={{ marginBottom: 16 }}>
+                        <div style={{
+                          fontSize: "1rem", lineHeight: 1.7, fontWeight: 700, color: C.textSub
+                        }}>
+                          {currentQuestion?.question}
+                        </div>
+                        <div style={{
+                          fontSize: 12, color: "gray", marginTop: 6
+                        }}>
+                          {currentQuestion?.translation}
+                        </div>
+                      </div>
                       <div style={{ display: "flex", flexWrap: "wrap" }}>
                         {fillOptions.map(o => (
                           <QuizBtn key={o} state={fillAnswered[o]} onClick={() => answerFill(o)}>{o}</QuizBtn>

@@ -1,11 +1,7 @@
-
-//need to change to a few select langauges
 const LANGUAGES = [
   { code: "auto", name: "Detect Language" },
   { code: "en", name: "English" },
   { code: "es", name: "Spanish" },
-  { code: "fr", name: "French" },
-  { code: "de", name: "German" },
   { code: "zh", name: "Chinese" },
 ];
 
@@ -23,7 +19,7 @@ const LanguageSelector = ({ translateFrom, translateTo, setTranslateFrom, setTra
     <label>
       To:{" "}
       <select value={translateTo} onChange={e => setTranslateTo(e.target.value)} style={{ width: "130px" }}>
-        {LANGUAGES.filter(l => l.code !== "auto").map(lang => (
+        {LANGUAGES.map(lang => (
           <option key={lang.code} value={lang.code}>{lang.name}</option>
         ))}
       </select>

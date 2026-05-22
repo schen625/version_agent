@@ -3,7 +3,10 @@ import express from "express";
 import cors from "cors";
 import mongoose from "mongoose";
 import authRoutes from "./routes/auth.js";
-import { GoogleGenAI } from "@google/genai";
+import buildPipeline from "./agents/buildPipeline.js";
+import Session from "./models/Sessions.js"
+import client from "./geminiClient.js";
+import UserWordStat from "./models/WordStats.js";
 
 const app = express();
 
@@ -15,72 +18,35 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log("MongoDB connected"))
   .catch(err => console.error(err));
 
-const sessionSchema = new mongoose.Schema({
-  userId: String,
-  mode: String,
-  title: String,
-  summary: String,
-  vocab: [
-    {
-      word: String,
-      translation: String,
-    }
-  ],
-  sentences: [
-    {
-      sentence: String,
-      translation: String,
-    }
-  ],
-  createdAt: { type: Date, default: Date.now },
-  endedAt: Date,
-
-  messages: [
-    {
-      role: String,
-      original: String,
-      translated: String,
-      timestamp: { type: Date, default: Date.now }
-    }
-  ]
-});
-
-const Session = mongoose.model("Session", sessionSchema);
-
-const client = new GoogleGenAI({
-  apiKey: process.env.API_KEY,
-  apiVersion: "v1alpha"
-});
-
 async function generateSessionSummary(messages) {
   const convoText = messages
     .map(m => `${m.role}: ${m.original}`)
     .join("\n");
 
   const prompt = `return just JSON with this information:
-{
-  "title": "short summary title (2-4 words)",
-  "summary": "1 sentence summary",
-  "vocab": [
-    { "word": "word", "translation": "meaning" }
-  ],
-  "sentences": [
     {
-      "sentence": "sentence from conversation",
-      "translation": "translation of sentence"
+      "title": "short summary title (2-4 words)",
+      "summary": "1 sentence summary",
+      "vocab": [
+        { "word": "word", "translation": "meaning" }
+      ],
+      "sentences": [
+        {
+          "sentence": "sentence from conversation",
+          "translation": "translation of sentence"
+        }
+      ]
     }
-  ]
-}
 
-Criteria:
-- I want 5 vocab words
-- I want 5 sentences
-- sentences MUST come from conversation
-- each sentence MUST have translation
+    RULES:
+    - I want 5 vocab words
+    - I want 5 sentences
+    - sentences MUST come from conversation
+    - each sentence MUST have translation
 
-Conversation:
-${convoText}
-`;
+    Conversation:
+    ${convoText}
+    `;
 
   const res = await client.models.generateContent({
     model: "gemini-3.1-flash-lite-preview",
@@ -111,36 +77,66 @@ app.post("/api/session/start", async (req, res) => {
     mode,
     messages: []
   });
-
   res.json(session);
 });
 
 app.post("/api/session/end", async (req, res) => {
   try {
     const { sessionId } = req.body;
-
     const session = await Session.findById(sessionId);
 
     if (!session) {
-      return res.status(404).json({ error: "Session not found" });
+      return res.status(404).json({
+        error: "Session not found"
+      });
     }
 
-    const summary = await generateSessionSummary(session.messages);
-    session.title = summary.title;
-    session.summary = summary.summary;
-    session.vocab = summary.vocab;
-    session.sentences = summary.sentences.map(s => ({
-      sentence: s.sentence,
-      translation: s.translation
-    }));
+    //creates learning materials
+    const learningContent =
+      await buildPipeline(session.messages);
+
+    //creates summary
+    const summaryContent =
+      await generateSessionSummary(session.messages);
+
+    session.title = summaryContent.title;
+    session.summary = summaryContent.summary;
+    session.sentences = summaryContent.sentences;
+    session.vocab = learningContent.vocabulary;
+    session.questionPool = learningContent.questionPool;
+    session.learnQuestions = learningContent.learnQuestions;
+    session.testQuestions = learningContent.testQuestions;
+
     session.endedAt = new Date();
-
     await session.save();
-
     res.json(session);
 
   } catch (err) {
-    console.error("SESSION END ERROR:", err);
+    console.error(err);
+    res.status(500).json({
+      error: err.message
+    });
+  }
+});
+
+app.post("/api/word-stat/update", async (req, res) => {
+  const { userId, word, isCorrect } = req.body;
+
+  try {
+    await UserWordStat.findOneAndUpdate(
+      { userId, word },
+      {
+        $inc: {
+          correct: isCorrect ? 1 : 0,
+          wrong: !isCorrect ? 1 : 0
+        },
+        $set: { lastSeen: new Date() }
+      },
+      { upsert: true, new: true }
+    );
+
+    res.json({ success: true });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -151,7 +147,6 @@ app.post("/api/session/message", async (req, res) => {
     message,
     translateFrom,
     translateTo,
-    mode
   } = req.body;
 
   try {
@@ -167,34 +162,43 @@ app.post("/api/session/message", async (req, res) => {
       contents: [{ role: "user", parts: [{ text: translatePrompt }] }]
     });
 
+    const historyText = session.messages
+      .slice(-10) // last 10 messages (important for token control)
+      .map(m => `${m.role === "user" ? "User" : "Agent"}: ${m.original}`)
+      .join("\n");
+
     const translatedUserMessage = translationRes.text.trim();
     const agentPrompt = `
-    You are a casual conversation partner helping someone practice a language.
+      You are a casual conversation partner helping someone practice a language, use conversation history for context.
 
-    CRITICAL RULES:
-    - Respond with ONLY ONE message
-    - Do NOT give multiple options
-    - Do NOT use bullet points
-    - Do NOT explain your answer
-    - Do NOT correct grammar unless asked
-    - Do NOT include notes or meta comments
-    - Keep it natural and conversational
-    - Keep it to one paragraph MAX
-    - Always continue the conversation
+      RULES:
+      - Respond with ONLY ONE message
+      - Do NOT give multiple options
+      - Do NOT use bullet points
+      - Do NOT explain your answer
+      - Do NOT correct grammar unless asked
+      - Do NOT include notes or meta comments
+      - Keep it natural and conversational
+      - Keep it to 1-2 sentences MAX
+      - Always continue the conversation
 
-    - Absolutely NEVER output lists, bullet points, or multiple versions
-    - If you feel multiple answers are possible, choose the BEST single one
+      - Absolutely NEVER output lists, bullet points, or multiple versions
+      - If you feel multiple answers are possible, choose the BEST single one
 
-    Format:
-    One short paragraph only.
-    No formatting.
-    No markdown.
+      Format:
+      One short paragraph only.
+      No formatting.
+      No markdown.
 
-    User said (in ${translateFrom}):
-    "${message}"
+      Conversation history:
+      ${historyText}
+      
+      User said (in ${translateFrom}):
+      "${message}"
 
-    Respond in ${translateTo}.
-    `;
+      Respond in ${translateTo}.
+      `;
+
     const agentRes = await client.models.generateContent({
       model: "gemini-3.1-flash-lite-preview",
       contents: [{ role: "user", parts: [{ text: agentPrompt }] }]

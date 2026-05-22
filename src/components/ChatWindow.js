@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import SpeechRecognition, { useSpeechRecognition } from "react-speech-recognition";
 import ChatMessage from "./ChatMessage";
 import LanguageSelector from "./LanguageSelector";
-import { sendMessage } from "../api/chat";
+import { sendMessage } from "./Chat.js";
 import avatar from "../assets/user-avatar.png";
 
 //Sessions
@@ -12,9 +12,29 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
   const [recording, setRecording] = useState(false);
   const [translateFrom, setTranslateFrom] = useState("");
   const [translateTo, setTranslateTo] = useState("");
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const messagesEndRef = useRef(null);
-
   const { transcript, resetTranscript, listening } = useSpeechRecognition();
+
+  //timer 
+  useEffect(() => {
+    let interval;
+
+    if (sessionActive) {
+      interval = setInterval(() => {
+        setElapsedSeconds(prev => prev + 1);
+      }, 1000);
+    }
+
+    return () => clearInterval(interval);
+  }, [sessionActive]);
+
+  const formatTime = (secs) => {
+    const mins = Math.floor(secs / 60);
+    const seconds = secs % 60;
+
+    return `${String(mins).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  };
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -50,8 +70,13 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
   };
 
   const getLangCode = (lang) => {
-    const map = { english: "en-US", spanish: "es-ES", french: "fr-FR", german: "de-DE" };
-    return map[lang?.toLowerCase()] || "en-US";
+    const map = {
+      en: "en-US",
+      es: "es-ES",
+      zh: "cmn-Hans-CN",
+    };
+
+    return map[lang] || "en-US";
   };
 
   const startSession = async () => {
@@ -65,6 +90,7 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
     const data = await res.json();
     setSessionId(data._id); setSessionActive(true);
     setSessionActiveGlobal(true); setChatHistory([]);
+    setElapsedSeconds(0);
   };
 
   const handleSendVoiceMessage = async () => {
@@ -98,9 +124,10 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
     });
     setSessionActive(false); setSessionId(null);
     setSessionActiveGlobal(false); setChatHistory([]);
+    setElapsedSeconds(0);
     refreshSessions();
   };
-  
+
   const toggleListening = () => {
     if (!sessionActive) return alert("Start session first");
 
@@ -189,6 +216,18 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
           textTransform: "uppercase",
         }}>
           {mode === "learn" ? "Mode: 🌱 Learn" : "Mode: 🎯 Test"}
+        </div>
+
+        <div style={{
+          padding: "8px 14px",
+          borderRadius: 14,
+          background: "rgba(255,255,255,0.65)",
+          border: "1.5px solid rgba(201,179,245,0.3)",
+          color: "#7a5faa",
+          fontWeight: 800,
+          fontSize: "0.85rem"
+        }}>
+          ⏱ {formatTime(elapsedSeconds)}
         </div>
 
         {/* Session button */}

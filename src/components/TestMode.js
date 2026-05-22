@@ -1,10 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
+
+const shuffle = (arr) =>
+  [...arr].sort(() => Math.random() - 0.5);
 
 const TestMode = ({ onBack }) => {
   const [sessions, setSessions] = useState([]);
-  const [selectedSession, setSelectedSession] = useState(null);
-
   const userId = localStorage.getItem("userId");
+  const [submitted, setSubmitted] = useState(false);
+  const [score, setScore] = useState(null);
+  const [answers, setAnswers] = useState({});
 
   useEffect(() => {
     if (!userId) return;
@@ -14,90 +18,242 @@ const TestMode = ({ onBack }) => {
       .then(setSessions);
   }, [userId]);
 
-  const vocab = selectedSession?.vocab || [];
-  const sentences = selectedSession?.sentences || [];
+  const allVocab = useMemo(() => sessions.flatMap((s) => s.vocab || []), [sessions]);
+  const allPool = useMemo(() => sessions.flatMap((s) => s.questionPool || []), [sessions]);
+
+  const sorted = useMemo(() => {
+    return [...allVocab]
+      .map((v) => {
+        const total = (v.stat?.correct || 0) + (v.stat?.wrong || 0);
+        const rate = total === 0 ? 0.5 : v.stat.wrong / total;
+        return { ...v, rate };
+      })
+      .sort((a, b) => a.rate - b.rate);
+  }, [allVocab]);
+
+  const pickFive = (arr) => shuffle(arr).slice(0, 5);
+
+  //middle 15 words (based on error rate)
+  const middleStart = Math.floor(sorted.length / 2) - 7;
+
+  const in_context_familiar = sorted.slice(middleStart, middleStart + 15);
+  const in_context_unfamiliar = shuffle(sorted.filter((v) => !in_context_familiar.includes(v))).slice(0, 15);
+  const out_of_context_familiar = shuffle(sorted.slice(15, 30));
+  const out_of_context_unfamiliar = shuffle(sorted.slice(-15));
+
+  const conditions = [
+    { id: "in_context_familiar", words: in_context_familiar },
+    { id: "in_context_unfamiliar", words: in_context_unfamiliar },
+    { id: "out_of_context_familiar", words: out_of_context_familiar },
+    { id: "out_of_context_unfamiliar", words: out_of_context_unfamiliar },
+  ];
+
+  const poolMap = useMemo(() => {
+    const map = {};
+    sessions.forEach((s) => {
+      (s.questionPool || []).forEach((q) => {
+        if (!map[q.word]) map[q.word] = [];
+        map[q.word].push(q);
+      });
+    });
+
+    return map;
+  }, [sessions]);
+
+  const buildSet = (words, type) => {
+    const selected = pickFive(words);
+
+    return selected.map((w) => {
+
+      const poolQuestion =
+        poolMap[w.word]?.find(
+          (q) => q.condition?.includes(type)
+        );
+
+      return {
+        id: `${type}_${w.word}_${Math.random()}`,
+        word: w.word,
+        answer: w.translation,
+        sentence: poolQuestion?.question || "",
+        type,
+      };
+    });
+  };
+
+  //all 60 Questions
+  const mcqQuestions = useMemo(
+    () => [
+      ...buildSet(in_context_familiar, "in_context_familiar"),
+      ...buildSet(in_context_unfamiliar, "in_context_unfamiliar"),
+      ...buildSet(out_of_context_familiar, "out_of_context_familiar"),
+      ...buildSet(out_of_context_unfamiliar, "out_of_context_unfamiliar"),
+    ],
+    [sorted, sessions]
+  );
+
+  const mcqOptionsMap = useMemo(() => {
+    const map = {};
+
+    mcqQuestions.forEach((q) => {
+      const distractors = allVocab
+        .filter((v) => v.word !== q.word)
+        .map((v) => v.translation);
+
+      const shuffledDistractors = shuffle(distractors).slice(0, 3);
+
+      const options = shuffle([q.answer, ...shuffledDistractors]);
+
+      map[q.id] = options;
+    });
+
+    return map;
+  }, [mcqQuestions, allVocab]);
+
+  const matchQuestions = useMemo(
+    () => [
+      ...buildSet(in_context_familiar, "in_context_familiar"),
+      ...buildSet(in_context_unfamiliar, "in_context_unfamiliar"),
+      ...buildSet(out_of_context_familiar, "out_of_context_familiar"),
+      ...buildSet(out_of_context_unfamiliar, "out_of_context_unfamiliar"),
+    ],
+    [sorted, sessions]
+  );
+
+  const fillQuestions = useMemo(
+    () => [
+      ...buildSet(in_context_familiar, "in_context_familiar"),
+      ...buildSet(in_context_unfamiliar, "in_context_unfamiliar"),
+      //...buildSet(out_of_context_familiar, "out_of_context_familiar"),
+      //...buildSet(out_of_context_unfamiliar, "out_of_context_unfamiliar"),
+    ],
+    [sorted, sessions]
+  );
+
+  const setAnswer = (id, value) => {
+    setAnswers((prev) => ({
+      ...prev,
+      [id]: value,
+    }));
+  };
+
+  const handleSubmit = () => {
+    let correct = 0;
+    let total = 0;
+
+    const allQuestions = [
+      ...mcqQuestions,
+      ...matchQuestions,
+      ...fillQuestions,
+    ];
+
+    allQuestions.forEach((q) => {
+      total++;
+      if (answers[q.id] === q.answer) {
+        correct++;
+      }
+    });
+
+    setScore({ correct, total });
+    setSubmitted(true);
+  };
 
   return (
     <div style={{
-      height: "100vh",
-      display: "flex",
+      minHeight: "100vh",
+      padding: 40,
       fontFamily: "'Nunito', sans-serif",
-      background: "linear-gradient(145deg, #fdf6f0, #f3eeff, #e8f8f5)"
+      background:
+        "linear-gradient(145deg, #fdf6f0, #f3eeff, #e8f8f5)"
     }}>
 
-      {/* Sidebar */}
-      <div style={{
-        width: 280,
-        padding: 18,
-        overflowY: "auto",
-        background: "rgba(255,255,255,0.6)",
-        borderRight: "2px solid rgba(255,255,255,0.9)",
-        backdropFilter: "blur(16px)"
-      }}>
-        <h3 style={{ fontSize: "0.8rem", color: "#9e8cc0" }}>
-          Test Sessions
-        </h3>
+      <button onClick={onBack}>
+        ← Back
+      </button>
 
-        {sessions.map(s => (
-          <div key={s._id}
-            onClick={() => setSelectedSession(s)}
-            style={{
-              padding: 14,
-              marginBottom: 10,
-              borderRadius: 16,
-              cursor: "pointer",
-              background: "rgba(255,255,255,0.7)"
-            }}>
-            <b>{s.title}</b>
-            <div style={{ fontSize: "0.75rem" }}>{s.summary}</div>
+      <h1>Assessment</h1>
+      {/*MCQ*/}
+      <section>
+        <h2>🎯 MCQ (20)</h2>
+        {mcqQuestions.map((q) => (
+          <div key={q.id} style={{ marginBottom: 15 }}>
+            <p style={{ fontWeight: 800 }}>{q.word}</p>
+
+            {mcqOptionsMap[q.id]?.map((opt) => (
+              <button
+                key={opt}
+                disabled={submitted}
+                onClick={() => setAnswer(q.id, opt)}
+                style={{
+                  margin: 5,
+                  background: answers[q.id] === opt ? "#c9b3f5" : "white",
+                }}
+              >
+                {opt}
+              </button>
+            ))}
           </div>
         ))}
-      </div>
 
-      {/* Main */}
-      <div style={{ flex: 1, padding: 30 }}>
+        {/*Fill in Blank*/}
+        <h2>✍️ Fill in the Blank (20)</h2>
 
-        <button onClick={onBack} style={{
-          marginBottom: 16,
-          padding: "8px 14px",
-          borderRadius: 10,
-          border: "none",
-          background: "#eee",
-          cursor: "pointer",
-          fontWeight: 700
-        }}>
-          ← Back
-        </button>
+        {fillQuestions.map((q) => (
+          <div key={q.id} style={{ marginBottom: 25, padding: 15, background: "white", borderRadius: 12 }}>
+            <div style={{ fontWeight: 800, fontSize: "1rem", marginBottom: 6 }}>
+              {q.sentence}
+            </div>
+            <div style={{ fontSize: "0.85rem", color: "#9e8cc0", marginBottom: 12 }}>
+              {q.answer}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap" }}>
+              {allVocab
+                .filter(v => v.word !== q.word)
+                .sort(() => Math.random() - 0.5)
+                .slice(0, 3)
+                .concat(allVocab.find(v => v.word === q.word))
+                .sort(() => Math.random() - 0.5)
+                .map((v) => (
+                  <button
+                    key={v.word}
+                    disabled={submitted}
+                    onClick={() => setAnswer(q.id, v.translation)}
+                    style={{
+                      margin: 5,
+                      padding: "8px 12px",
+                      borderRadius: 10,
+                      background: answers[q.id] === v.translation ? "#c9b3f5" : "white",
+                      border: "1px solid #ddd",
+                    }}
+                  >
+                    {v.translation}
+                  </button>
+                ))}
+            </div>
+          </div>
+        ))}
 
-        {!selectedSession ? (
-          <p>Select a session</p>
+
+        {!submitted ? (
+          <button
+            onClick={handleSubmit}
+            style={{
+              marginTop: 30,
+              padding: 15,
+              fontWeight: 800,
+              background: "#7fc9a9",
+              color: "white",
+            }}
+          >
+            Submit Exam
+          </button>
         ) : (
-          <>
-            <h2>🧪 Test Mode</h2>
-
-            <h3>📚 Vocabulary</h3>
-            {vocab.map(v => (
-              <div key={v.word}>
-                <b>{v.word}</b> → {v.translation}
-              </div>
-            ))}
-
-            <h3 style={{ marginTop: 20 }}>🧠 Sentences</h3>
-            {sentences.map((s, i) => (
-              <div key={i} style={{ marginBottom: 10 }}>
-                <div style={{ fontWeight: 700 }}>
-                  {s.sentence}
-                </div>
-                <div style={{ fontSize: "0.85rem", color: "#9e8cc0" }}>
-                  {s.translation || "No translation"}
-                </div>
-              </div>
-            ))}
-          </>
+          <div style={{ marginTop: 30, fontSize: 18 }}>
+            🎉 Score: {score.correct} / {score.total}
+          </div>
         )}
-      </div>
+      </section>
     </div>
   );
-};
+}
 
 export default TestMode;
