@@ -20,8 +20,3 @@ export const sendMessage = async ({
   return res.json();
 };
 
-export const fetchTopicSuggestions = async () => {
-  const res = await fetch("http://localhost:3001/api/topics/suggest");
-  if (!res.ok) throw new Error("Failed to load topics");
-  return res.json();
-};

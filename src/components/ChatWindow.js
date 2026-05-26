@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import SpeechRecognition, { useSpeechRecognition } from "react-speech-recognition";
 import ChatMessage from "./ChatMessage";
 import LanguageSelector from "./LanguageSelector";
-import { sendMessage, fetchTopicSuggestions } from "../api/chat";
+import { sendMessage } from "../api/chat";
 import avatar from "../assets/user-avatar.png";
 
 //Sessions
@@ -12,8 +12,6 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
   const [recording, setRecording] = useState(false);
   const [translateFrom, setTranslateFrom] = useState("");
   const [translateTo, setTranslateTo] = useState("");
-  const [topics, setTopics] = useState([]);
-  const [topicsLoading, setTopicsLoading] = useState(false);
   const messagesEndRef = useRef(null);
 
   const { transcript, resetTranscript, listening } = useSpeechRecognition();
@@ -21,22 +19,6 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatHistory]);
-
-  const loadTopics = async () => {
-    try {
-      setTopicsLoading(true);
-      const data = await fetchTopicSuggestions();
-      setTopics(Array.isArray(data.topics) ? data.topics : []);
-    } catch (err) {
-      console.error("Failed to load topics:", err);
-    } finally {
-      setTopicsLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    loadTopics();
-  }, []);
 
   if (!SpeechRecognition.browserSupportsSpeechRecognition()) {
     return <p style={{ padding: 20, color: "#9178cc" }}>Browser does not support speech recognition.</p>;
@@ -78,11 +60,28 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
     }
     const res = await fetch("http://localhost:3001/api/session/start", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userId: localStorage.getItem("userId"), mode }),
+      body: JSON.stringify({
+        userId: localStorage.getItem("userId"),
+        mode,
+        translateFrom,
+        translateTo,
+      }),
     });
     const data = await res.json();
     setSessionId(data._id); setSessionActive(true);
-    setSessionActiveGlobal(true); setChatHistory([]);
+    setSessionActiveGlobal(true);
+
+    if (data.agent && data.agent.original) {
+      const openingMsg = {
+        role: "agent",
+        original: data.agent.original,
+        translated: mode === "learn" ? data.agent.translated : null,
+      };
+      setChatHistory([openingMsg]);
+      speakText(data.agent.original, getLangCode(translateTo));
+    } else {
+      setChatHistory([]);
+    }
   };
 
   const handleSendVoiceMessage = async () => {
@@ -246,81 +245,6 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
           }}>
             {recording ? "Recording…" : !sessionActive ? "Start a session first" : "Tap to speak"}
           </span>
-        </div>
-
-        {/* Topic suggestions */}
-        <div style={{
-          width: "100%",
-          background: "rgba(255,255,255,0.65)",
-          border: "1.5px solid rgba(201,179,245,0.35)",
-          borderRadius: 14,
-          padding: "12px 12px 10px",
-          boxSizing: "border-box",
-          boxShadow: "0 4px 14px rgba(201,179,245,0.12)",
-        }}>
-          <div style={{
-            display: "flex", alignItems: "center", justifyContent: "space-between",
-            marginBottom: 8,
-          }}>
-            <span style={{
-              fontSize: "0.72rem", fontWeight: 800,
-              color: "#9178cc", letterSpacing: "0.5px",
-              textTransform: "uppercase",
-            }}>
-              💡 Topic Ideas
-            </span>
-            <button
-              onClick={loadTopics}
-              disabled={topicsLoading}
-              title="Refresh topics"
-              style={{
-                background: "transparent",
-                border: "none",
-                cursor: topicsLoading ? "default" : "pointer",
-                color: "#9178cc",
-                fontSize: "0.95rem",
-                padding: 0,
-                lineHeight: 1,
-                opacity: topicsLoading ? 0.4 : 1,
-                transform: topicsLoading ? "rotate(180deg)" : "none",
-                transition: "transform 0.4s ease, opacity 0.2s",
-              }}
-            >
-              ↻
-            </button>
-          </div>
-
-          {topicsLoading && topics.length === 0 ? (
-            <p style={{
-              margin: 0, fontSize: "0.72rem", color: "#b8a8d8",
-              fontWeight: 600, fontStyle: "italic",
-            }}>
-              Brewing fresh ideas…
-            </p>
-          ) : topics.length === 0 ? (
-            <p style={{
-              margin: 0, fontSize: "0.72rem", color: "#b8a8d8", fontWeight: 600,
-            }}>
-              No topics yet. Tap ↻ to try again.
-            </p>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {topics.map((t, i) => (
-                <div key={i} style={{
-                  background: "linear-gradient(135deg, rgba(249,198,208,0.45), rgba(201,179,245,0.45))",
-                  color: "#6e5aa8",
-                  fontSize: "0.74rem",
-                  fontWeight: 700,
-                  padding: "7px 10px",
-                  borderRadius: 10,
-                  border: "1px solid rgba(255,255,255,0.7)",
-                  lineHeight: 1.3,
-                }}>
-                  {t}
-                </div>
-              ))}
-            </div>
-          )}
         </div>
 
         {/* Live transcript */}

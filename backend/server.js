@@ -52,6 +52,22 @@ const client = new GoogleGenAI({
   apiVersion: "v1alpha"
 });
 
+// Strip em/en dashes so TTS pauses naturally. Replace with comma+space to
+// preserve a real pause where the dash was, then dedupe runs of punctuation.
+function sanitizeAgentText(raw) {
+  if (!raw) return "";
+  let text = String(raw).trim();
+  text = text.replace(/^["']|["']$/g, "");
+  // Em-dash / en-dash with optional surrounding spaces -> comma + space
+  text = text.replace(/\s*[—–]\s*/g, ", ");
+  // Collapse accidental ", ," or ",." sequences
+  text = text.replace(/,\s*,/g, ",");
+  text = text.replace(/,\s*\./g, ".");
+  // Collapse multiple spaces
+  text = text.replace(/[ \t]{2,}/g, " ");
+  return text.trim();
+}
+
 async function generateSessionSummary(messages) {
   const convoText = messages
     .map(m => `${m.role}: ${m.original}`)
@@ -104,15 +120,119 @@ ${convoText}
   }
 }
 
-app.post("/api/session/start", async (req, res) => {
-  const { userId, mode } = req.body;
-  const session = await Session.create({
-    userId,
-    mode,
-    messages: []
-  });
+async function generateAgentOpening(translateFrom, translateTo) {
+  const topicPool = [
+    "Introducing yourself",
+    "Your family",
+    "Your school or work",
+    "Your daily routine",
+    "Your hobbies",
+    "Your favorite food",
+    "Ordering food at a restaurant",
+    "Shopping for clothes",
+    "Asking for directions",
+    "Travel plans",
+    "Describing your room or house",
+    "Talking about the weather",
+    "Weekend plans",
+    "Sports you like",
+    "Music, movies, or shows",
+    "Your favorite place",
+    "A recent trip",
+    "Health and feeling sick",
+    "Making plans with a friend",
+    "Talking about goals and dreams",
+    "Describing a photo",
+    "Comparing two things",
+    "Giving opinions",
+    "Telling a short story",
+    "Solving a small problem, like losing something"
+  ];
+  const shuffled = [...topicPool].sort(() => Math.random() - 0.5);
+  const picked = shuffled.slice(0, 2 + Math.floor(Math.random() * 2)); // 2 or 3 topics
+  const seed = Math.floor(Math.random() * 1000000);
 
-  res.json(session);
+  const openingPrompt = `You are a warm, friendly conversation partner helping someone practice ${translateTo}.
+
+This is the very first message of a brand new conversation — YOU are starting it. Write an opening that:
+1. Warmly greets the user (something inviting, not stiff)
+2. Suggests A FEW (2 or 3) beginner-friendly everyday topic ideas the user could chat about, framed naturally — not as a bullet list, but woven into a sentence (e.g. "tell me about X, or Y, or even Z")
+3. Clearly but briefly reassures the user that the suggestion is JUST a suggestion and they're welcome to talk about absolutely anything they'd like
+
+Tone reference. Your output should feel as warm and inviting as this example (do NOT copy it; match the warmth):
+"Hi! Let's start with something simple: tell me about one thing you did today, or one thing you're planning to do later. This is just a suggestion, so you can talk about anything you'd like."
+
+For variety this session, build your suggestion around these topic ideas: ${picked.join("; ")}.
+Variation seed: ${seed}
+
+Rules:
+- Write ONLY in ${translateTo}
+- 2 to 3 short sentences total. Warm and welcoming, not long-winded
+- Sound natural, casual, and friendly (like a friend, not a teacher)
+- Frame the topic ideas as concrete, easy invitations (for example "tell me about…", "you could share…", "we could chat about…"), not as a labeled list
+- IMPORTANT: Do NOT use em-dashes (—) or en-dashes (–) anywhere. They sound unnatural when read aloud. Use commas, periods, colons, or the word "and" instead, so the sentence pauses naturally
+- No markdown, no bullets, no numbered lists, no quotes around the message, no meta-commentary
+- Output ONLY the greeting message itself, nothing else`;
+
+  let agentReplyOriginal;
+  try {
+    const openingRes = await client.models.generateContent({
+      model: "gemini-3.1-flash-lite-preview",
+      contents: [{ role: "user", parts: [{ text: openingPrompt }] }],
+      config: { temperature: 1.2, topP: 0.95 }
+    });
+    agentReplyOriginal = sanitizeAgentText(openingRes.text);
+  } catch (err) {
+    console.error("Agent opening generation failed:", err);
+    agentReplyOriginal = "Hi! Let's start with something simple. Tell me about your day, your hobbies, or your favorite food. This is just a suggestion, so feel free to talk about anything you'd like.";
+  }
+
+  let agentReplyTranslated = "";
+  try {
+    const backTranslatePrompt = `Translate this from ${translateTo} to ${translateFrom}. Only output the translation. Do not use em-dashes (—) or en-dashes (–); use commas, periods, or "and" instead. ${agentReplyOriginal}`;
+    const backTranslateRes = await client.models.generateContent({
+      model: "gemini-3.1-flash-lite-preview",
+      contents: [{ role: "user", parts: [{ text: backTranslatePrompt }] }]
+    });
+    agentReplyTranslated = sanitizeAgentText(backTranslateRes.text);
+  } catch (err) {
+    console.error("Opening back-translate failed:", err);
+  }
+
+  return { original: agentReplyOriginal, translated: agentReplyTranslated };
+}
+
+app.post("/api/session/start", async (req, res) => {
+  try {
+    const { userId, mode, translateFrom, translateTo } = req.body;
+    const session = await Session.create({
+      userId,
+      mode,
+      messages: []
+    });
+
+    let agent = null;
+    if (translateFrom && translateTo) {
+      agent = await generateAgentOpening(translateFrom, translateTo);
+      session.messages.push({
+        role: "agent",
+        original: agent.original,
+        translated: agent.translated
+      });
+      await session.save();
+    }
+
+    res.json({
+      _id: session._id,
+      userId: session.userId,
+      mode: session.mode,
+      messages: session.messages,
+      agent
+    });
+  } catch (err) {
+    console.error("SESSION START ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/api/session/end", async (req, res) => {
@@ -167,7 +287,7 @@ app.post("/api/session/message", async (req, res) => {
       contents: [{ role: "user", parts: [{ text: translatePrompt }] }]
     });
 
-    const translatedUserMessage = translationRes.text.trim();
+    const translatedUserMessage = sanitizeAgentText(translationRes.text);
     const agentPrompt = `
     You are a casual conversation partner helping someone practice a language.
 
@@ -184,6 +304,7 @@ app.post("/api/session/message", async (req, res) => {
 
     - Absolutely NEVER output lists, bullet points, or multiple versions
     - If you feel multiple answers are possible, choose the BEST single one
+    - IMPORTANT: Do NOT use em-dashes (—) or en-dashes (–). They sound unnatural when read aloud. Use commas, periods, colons, or the word "and" so the sentence pauses naturally.
 
     Format:
     One short paragraph only.
@@ -200,13 +321,13 @@ app.post("/api/session/message", async (req, res) => {
       contents: [{ role: "user", parts: [{ text: agentPrompt }] }]
     });
 
-    const agentReplyOriginal = agentRes.text.trim();
-    const backTranslatePrompt = `Translate this from ${translateTo} to ${translateFrom}. Only output the translation. ${agentReplyOriginal}`;
+    const agentReplyOriginal = sanitizeAgentText(agentRes.text);
+    const backTranslatePrompt = `Translate this from ${translateTo} to ${translateFrom}. Only output the translation. Do not use em-dashes (—) or en-dashes (–); use commas, periods, or "and" instead. ${agentReplyOriginal}`;
     const backTranslateRes = await client.models.generateContent({
       model: "gemini-3.1-flash-lite-preview",
       contents: [{ role: "user", parts: [{ text: backTranslatePrompt }] }]
     });
-    const agentReplyTranslated = backTranslateRes.text.trim();
+    const agentReplyTranslated = sanitizeAgentText(backTranslateRes.text);
 
     session.messages.push(
       {
@@ -243,71 +364,6 @@ app.post("/api/session/message", async (req, res) => {
 app.get("/api/session/:sessionId", async (req, res) => {
   const session = await Session.findById(req.params.sessionId);
   res.json(session);
-});
-
-app.get("/api/topics/suggest", async (req, res) => {
-  try {
-    const themePool = [
-      "daily routines", "food and meals", "shopping",
-      "family and friends", "hobbies and free time", "weather and seasons",
-      "travel and places", "home life", "weekend plans",
-      "celebrations and holidays", "transportation", "pets and animals",
-      "music and movies", "sports and exercise", "school and work life",
-      "cooking", "describing people", "talking about the past",
-      "talking about the future", "feelings and moods", "city vs countryside",
-      "favorites and preferences", "asking for directions", "making plans with a friend"
-    ];
-    const shuffled = [...themePool].sort(() => Math.random() - 0.5);
-    const focus = shuffled.slice(0, 3);
-    const seed = Math.floor(Math.random() * 1000000);
-
-    const prompt = `Generate 5 conversation topic suggestions for a language learner.
-
-Criteria:
-- Topics MUST be applicable to everyday life (common, relatable situations)
-- Topics MUST be beginner-friendly (simple, easy to talk about, no abstract or technical subjects)
-- Each topic should be a short phrase (2-5 words)
-- Avoid heavy or sensitive subjects
-- Be CREATIVE and DIFFERENT from typical examples — surprise me
-
-For this batch, draw inspiration loosely from these themes (you don't need to use all of them, and you can blend or extend them): ${focus.join(", ")}.
-
-Variation seed: ${seed} (use this to ensure your output differs from previous calls).
-
-Return ONLY a JSON array of 5 strings. No explanation, no markdown, no code fences.`;
-
-    const result = await client.models.generateContent({
-      model: "gemini-3.1-flash-lite-preview",
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      config: {
-        temperature: 1.4,
-        topP: 0.95
-      }
-    });
-
-    let text = result.text.trim();
-    text = text.replace(/```json/g, "").replace(/```/g, "").trim();
-
-    let topics;
-    try {
-      topics = JSON.parse(text);
-      if (!Array.isArray(topics)) throw new Error("Not an array");
-    } catch (err) {
-      console.error("Topic JSON error:", text);
-      topics = [
-        "Ordering coffee",
-        "My favorite food",
-        "Weekend plans",
-        "Talking about pets",
-        "Describing the weather"
-      ];
-    }
-
-    res.json({ topics });
-  } catch (err) {
-    console.error("TOPIC SUGGEST ERROR:", err);
-    res.status(500).json({ error: err.message });
-  }
 });
 
 app.get("/api/user/:userId/sessions", async (req, res) => {
