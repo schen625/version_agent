@@ -95,7 +95,7 @@ const SectionDivider = ({ emoji, title }) => (
 );
 
 const LearnMode = ({ mode }) => {
-  const [tab, setTab] = useState("chat");
+  const [learningPhase, setLearningPhase] = useState("chat");
   const [sessions, setSessions] = useState([]);
   const [selectedSession, setSelectedSession] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -117,8 +117,25 @@ const LearnMode = ({ mode }) => {
 
   useEffect(() => { fetchSessions(); }, [userId]);
 
-  const vocab = selectedSession?.vocab || [];
-  const sentences = selectedSession?.sentences || [];
+  useEffect(() => {
+    setLearningPhase("chat");
+
+    const chatTimer = setTimeout(() => {
+      setLearningPhase("study");
+    }, 4 * 60 * 1000);
+
+    const studyTimer = setTimeout(() => {
+      setLearningPhase("activities");
+    }, 8 * 60 * 1000);
+
+    return () => {
+      clearTimeout(chatTimer);
+      clearTimeout(studyTimer);
+    };
+  }, []);
+
+  const vocab = useMemo(() => selectedSession?.vocab || [], [selectedSession]);
+  const sentences = useMemo(() => selectedSession?.sentences || [], [selectedSession]);
 
   const resetAll = () => {
     const indices = vocab.map((_, i) => i);
@@ -194,6 +211,12 @@ const LearnMode = ({ mode }) => {
   const [rightWords, setRightWords] = useState([]);
 
   useEffect(() => {
+    if (!vocab.length || !matchOrder.length) {
+      setLeftWords([]);
+      setRightWords([]);
+      return;
+    }
+
     const ordered = matchOrder.map(i => vocab[i]);
     setLeftWords(shuffle(ordered));
     setRightWords(shuffle(ordered));
@@ -293,7 +316,7 @@ const LearnMode = ({ mode }) => {
         ::-webkit-scrollbar-thumb { background: rgba(201,179,245,0.35); border-radius: 4px; }
       `}</style>
 
-      {/* Top Navigation (Chat/Learn) */}
+      {/* Top Navigation (Chat/Learn)
       <div style={{
         display: "flex",
         background: "rgba(255,255,255,0.65)",
@@ -320,11 +343,11 @@ const LearnMode = ({ mode }) => {
             {label}
           </button>
         ))}
-      </div>
+      </div> */}
 
       {/* Content */}
       <div style={{ flex: 1, overflow: "hidden" }}>
-        {tab === "chat" && (
+        {learningPhase === "chat" && (
           <ChatWindow
             mode={mode}
             chatHistory={chatHistory}
@@ -334,7 +357,7 @@ const LearnMode = ({ mode }) => {
           />
         )}
 
-        {tab === "learn" && (
+        {learningPhase === "study" && (
           <div style={{ display: "flex", height: "100%", position: "relative" }}>
             {!sidebarOpen && (
               <button
@@ -501,31 +524,7 @@ const LearnMode = ({ mode }) => {
                     );
                   })}
 
-                  {/* MCQ */}
-                  <SectionDivider emoji="🎯" title="Vocab Quiz" />
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-                    <RestartBtn onClick={resetAll} />
-                    <span style={{ fontSize: "0.78rem", color: C.textMuted, fontWeight: 700 }}>
-                      {mcqDone ? "Complete!" : `${mcqIndex + 1} / ${vocab.length}`}
-                    </span>
-                  </div>
-                  {!mcqDone ? (
-                    <div style={{ ...glassCard, padding: "22px 26px" }}>
-                      <p style={{ margin: "0 0 16px", fontSize: "1.15rem", fontWeight: 900, color: C.textMain }}>
-                        {vocab[currentMCQIndex]?.word}
-                      </p>
-                      <p style={{ margin: "0 0 14px", fontSize: "0.82rem", color: C.textMuted, fontWeight: 700 }}>
-                        Pick the correct translation 👇
-                      </p>
-                      <div style={{ display: "flex", flexWrap: "wrap" }}>
-                        {mcqOptions.map(o => (
-                          <QuizBtn key={o} state={mcqAnswered[o]} onClick={() => answerMCQ(o)}>{o}</QuizBtn>
-                        ))}
-                      </div>
-                    </div>
-                  ) : <DoneState />}
-
-                  {/* Matching */}
+                  {/* Matching
                   <SectionDivider emoji="🔗" title="Matching" />
                   <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
                     <RestartBtn onClick={resetAll} />
@@ -580,37 +579,77 @@ const LearnMode = ({ mode }) => {
                         })}
                       </div>
                     </div>
-                  ) : <DoneState />}
+                  ) : <DoneState />} */}
 
-                  {/* Fill in The Blank */}
-                  <SectionDivider emoji="✍️" title="Fill in the Blank" />
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-                    <RestartBtn onClick={resetAll} />
-                    <span style={{ fontSize: "0.78rem", color: C.textMuted, fontWeight: 700 }}>
-                      {fillDone ? "Complete!" : `${fillIndex + 1} / ${vocab.length}`}
-                    </span>
-                  </div>
-                  {!fillDone ? (
-                    <div style={{ ...glassCard, padding: "22px 26px", marginBottom: 40 }}>
-                      <p style={{ margin: "0 0 16px", fontSize: "1rem", lineHeight: 1.7, fontWeight: 700, color: C.textSub }}>
-                        {sentences[currentFillIndex]?.sentence?.replace(
-                          vocab[currentFillIndex]?.word,
-                          "______"
-                        )}
-                        <p style={{ fontSize: 12, color: "gray" }}>
-                          {sentences[currentFillIndex]?.translation}
-                        </p>
-                      </p>
-                      <div style={{ display: "flex", flexWrap: "wrap" }}>
-                        {fillOptions.map(o => (
-                          <QuizBtn key={o} state={fillAnswered[o]} onClick={() => answerFill(o)}>{o}</QuizBtn>
-                        ))}
-                      </div>
-                    </div>
-                  ) : <DoneState />}
                 </>
               )}
             </div>
+          </div>
+        )}
+
+        {learningPhase === "activities" && (
+          <div style={{ flex: 1, padding: "24px 32px", overflowY: "auto" }}>
+            {/* MCQ */}
+            <SectionDivider emoji="🎯" title="Vocab Quiz" />
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+              <RestartBtn onClick={resetAll} />
+              <span style={{ fontSize: "0.78rem", color: C.textMuted, fontWeight: 700 }}>
+                {mcqDone ? "Complete!" : `${mcqIndex + 1} / ${vocab.length}`}
+              </span>
+            </div>
+
+            {!mcqDone ? (
+              <div style={{ ...glassCard, padding: "22px 26px" }}>
+                <p style={{ margin: "0 0 16px", fontSize: "1.15rem", fontWeight: 900, color: C.textMain }}>
+                  {vocab[currentMCQIndex]?.word}
+                </p>
+                <p style={{ margin: "0 0 14px", fontSize: "0.82rem", color: C.textMuted, fontWeight: 700 }}>
+                  Pick the correct translation 👇
+                </p>
+                <div style={{ display: "flex", flexWrap: "wrap" }}>
+                  {mcqOptions.map(o => (
+                    <QuizBtn key={o} state={mcqAnswered[o]} onClick={() => answerMCQ(o)}>
+                      {o}
+                    </QuizBtn>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <DoneState />
+            )}
+
+            {/* Fill in The Blank */}
+            <SectionDivider emoji="✍️" title="Fill in the Blank" />
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+              <RestartBtn onClick={resetAll} />
+              <span style={{ fontSize: "0.78rem", color: C.textMuted, fontWeight: 700 }}>
+                {fillDone ? "Complete!" : `${fillIndex + 1} / ${vocab.length}`}
+              </span>
+            </div>
+
+            {!fillDone ? (
+              <div style={{ ...glassCard, padding: "22px 26px", marginBottom: 40 }}>
+                <div style={{ margin: "0 0 16px", fontSize: "1rem", lineHeight: 1.7, fontWeight: 700, color: C.textSub }}>
+                  {sentences[currentFillIndex]?.sentence?.replace(
+                    vocab[currentFillIndex]?.word,
+                    "______"
+                  )}
+                  <p style={{ fontSize: 12, color: "gray" }}>
+                    {sentences[currentFillIndex]?.translation}
+                  </p>
+                </div>
+
+                <div style={{ display: "flex", flexWrap: "wrap" }}>
+                  {fillOptions.map(o => (
+                    <QuizBtn key={o} state={fillAnswered[o]} onClick={() => answerFill(o)}>
+                      {o}
+                    </QuizBtn>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <DoneState />
+            )}
           </div>
         )}
       </div>
