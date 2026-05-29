@@ -117,14 +117,18 @@ const LearnMode = ({ mode }) => {
   useEffect(() => { fetchSessions(); }, [userId]);
 
   const vocab = selectedSession?.vocab || [];
-  const sentences = selectedSession?.sentences || [];
+  const sentences = (selectedSession?.sentences || []).slice(0, 4);
   const learnQuestions = selectedSession?.learnQuestions || [];
 
   const resetAll = () => {
     const vocabIndices = vocab.map((_, i) => i);
-    const fillIndices = learnQuestions.map((_, i) => i);
+    const validQuestions = learnQuestions.filter(
+      q => q && q.answer
+    );
+    setFillSubset(
+      shuffle(validQuestions).slice(0, 4)
+    );
     setMcqOrder(shuffle(vocabIndices));
-    setFillSubset(shuffle(fillIndices).slice(0, 5));
     setMcqIndex(0); setMcqAnswered({}); setMcqDone(false); setMcqMistakes(0);
     setFillIndex(0); setFillAnswered({}); setFillDone(false); setFillMistakes(0);
   };
@@ -216,7 +220,7 @@ const LearnMode = ({ mode }) => {
   const [fillDone, setFillDone] = useState(false);
 
   useEffect(() => { setFillAnswered({}); }, [fillIndex]);
-  const currentQuestion = learnQuestions[fillSubset[fillIndex]];
+  const currentQuestion = fillSubset[fillIndex];
 
   const fillOptions = useMemo(() => {
     if (!currentQuestion) return [];
@@ -266,8 +270,11 @@ const LearnMode = ({ mode }) => {
   };
 
   const resetFill = () => {
-    const validQuestions = learnQuestions.filter(q => vocab.some(v => v.word === q.answer));
-    setFillSubset(shuffle(validQuestions.map((_, i) => i)).slice(0, 5));
+    const validQuestions = learnQuestions.filter(q =>
+      q && q.answer && vocab.some(v => v.word === q.answer)
+    );
+
+    setFillSubset(shuffle(validQuestions).slice(0, 4));
     setFillIndex(0);
     setFillAnswered({});
     setFillDone(false);

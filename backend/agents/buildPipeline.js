@@ -2,9 +2,24 @@ import extractVocab from "./extractVocab.js";
 import generateQuestions from "./generateQuestions.js";
 import questionFilter from "./questionFilter.js";
 import regenerateQuestion from "./regenerateQuestion.js";
+import generateOutContextFamiliar from "./OOC/OOCFamiliar.js";
+import generateOutContextUnfamiliar from "./OOC/OOCUnfamiliar.js";
 
 function shuffle(arr) {
     return [...arr].sort(() => Math.random() - 0.5);
+}
+
+function createQuestionObject(question, extra = {}) {
+    return {
+        id: crypto.randomUUID(),
+        type: "fill_blank",
+        word: question.word,
+        question: question.question,
+        answer: question.answer,
+        translation: question.translation || "",
+        difficulty: question.difficulty || "beginner",
+        ...extra
+    };
 }
 
 async function validateWithRetry(question, vocabItem, retries = 3) {
@@ -17,14 +32,14 @@ async function validateWithRetry(question, vocabItem, retries = 3) {
                 return {
                     ...currentQuestion,
                     approved: true,
+                    answer: currentQuestion.answer,
                     validationReason: validation.reason,
                     originalSentence:
                         vocabItem.contextSentence
                 };
             }
 
-            currentQuestion =
-                await regenerateQuestion(vocabItem, currentQuestion, validation.reason);
+            currentQuestion = await regenerateQuestion(vocabItem, currentQuestion, validation.reason);
         } catch (err) {
             console.error(err);
         }
@@ -43,36 +58,75 @@ async function generateQuestionPool(vocabItem) {
 
 export default async function buildPipeline(messages) {
     const vocabResult = await extractVocab(messages);
-    const vocabulary = vocabResult.vocabulary.sort((a, b) => b.score - a.score).slice(0, 5);
-    const generatedQuestions = await Promise.all(vocabulary.map(async (vocabItem) => {
-        const validQuestions = await generateQuestionPool(vocabItem);
-        const shuffledQuestions = shuffle(validQuestions);
-        const familiar = shuffledQuestions.slice(0, 4).map(q => ({
-            word: vocabItem.word,
-            question: q.question || q.sentence || q.text || "",
-            answer: vocabItem.translation,
-            condition: "in_context_familiar"
-        }));
-        const unfamiliar = shuffledQuestions.slice(4, 8).map(q => ({
-            word: vocabItem.word,
-            question: q.question || q.sentence || q.text || "",
-            answer: vocabItem.translation,
-            condition: "in_context_unfamiliar"
-        }));
-        return {
-            word: vocabItem.word, familiar, unfamiliar
-        };
-    })
+
+    const vocabulary = vocabResult.vocabulary
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 4);
+    const inContext = await Promise.all(
+        vocabulary.map(async (vocabItem) => {
+            const validQuestions =
+                await generateQuestionPool(vocabItem);
+
+            return validQuestions.map(q =>
+                createQuestionObject(q)
+            );
+        })
     );
 
-    const learnQuestions = generatedQuestions.flatMap(q => q.familiar);
-    const testQuestions = generatedQuestions.flatMap(q => q.unfamiliar);
+    const allInContext = shuffle(inContext.flat());
+
+    const learnQuestions = allInContext
+        .slice(0, 10)
+        .map(q => ({ ...q, condition: "in_context_familiar" }));
+
+    const inContextUnfamiliar = allInContext
+        .slice(10, 20)
+        .map(q => ({ ...q, condition: "in_context_unfamiliar" }));
+
+    //OOC familiar
+    const outContextFamiliar = await Promise.all(
+        vocabulary.map(v => generateOutContextFamiliar(v))
+    );
+
+    const oocFamiliar = outContextFamiliar
+        .flat()
+        .filter(Boolean)
+        .map(q => ({
+            ...q,
+            word: q.answer,
+            condition: "out_of_context_familiar"
+        }));
+
+    //OOC unfamiliar
+    const outContextUnfamiliar = await Promise.all(
+        vocabulary.map(v => generateOutContextUnfamiliar(v))
+    );
+
+    const oocUnfamiliar = outContextUnfamiliar
+        .flat()
+        .filter(Boolean)
+        .map(q => ({
+            ...q,
+            word: q.answer,
+            condition: "out_of_context_unfamiliar"
+        }));
+
     const questionPool = [
         ...learnQuestions,
-        ...testQuestions
-    ];
-console.log("QUESTION POOL SAMPLE:", questionPool.slice(0, 3));
+        ...inContextUnfamiliar,
+        ...oocFamiliar,
+        ...oocUnfamiliar
+    ].filter(q =>
+        q &&
+        q.question &&
+        q.word &&
+        q.condition
+    );
+
     return {
-        vocabulary, questionPool, learnQuestions, testQuestions
+        vocabulary,
+        questionPool,
+        learnQuestions,
+        testQuestions: questionPool
     };
 }

@@ -9,7 +9,8 @@ const QuestionSchema = new mongoose.Schema({
   difficulty: String,
   approved: Boolean,
   validationReason: String,
-  originalSentence: String
+  originalSentence: String,
+  condition: String 
 });
 
 const VocabularySchema = new mongoose.Schema({
@@ -28,6 +29,7 @@ const SessionSchema = new mongoose.Schema({
   vocab: [VocabularySchema],
   learnQuestions: [QuestionSchema],
   testQuestions: [QuestionSchema],
+  questionPool: [QuestionSchema],
   sentences: [
     {
       sentence: String,
@@ -49,7 +51,11 @@ const SessionSchema = new mongoose.Schema({
         default: Date.now
       }
     }
-  ]
-});
+  ],
+},
+  {
+    versionKey: false
+  }
+);
 
 export default mongoose.model("Session", SessionSchema);

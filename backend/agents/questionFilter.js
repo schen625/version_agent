@@ -31,7 +31,7 @@ export default async function questionFilter(question, vocabItem) {
         `;
 
     const res = await client.models.generateContent({
-        model: "gemini-3.1-flash-lite-preview",
+        model: "gemini-2.5-flash",
         contents: [
             {
                 role: "user",

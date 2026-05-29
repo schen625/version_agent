@@ -40,7 +40,7 @@ export default async function regenerateQuestion(vocabItem,failedQuestion,failur
 
     const res =
         await client.models.generateContent({
-            model: "gemini-3.1-flash-lite-preview",
+            model: "gemini-2.5-flash",
             contents: [{
                 role: "user",
                 parts: [{ text: prompt }]
