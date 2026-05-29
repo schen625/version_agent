@@ -98,14 +98,16 @@ const LearnMode = ({ mode }) => {
   const [learningPhase, setLearningPhase] = useState("chat");
   const [sessions, setSessions] = useState([]);
   const [selectedSession, setSelectedSession] = useState(null);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // const [sidebarOpen, setSidebarOpen] = useState(true);
   const [chatHistory, setChatHistory] = useState([]);
-  const [sessionActive, setSessionActive] = useState(false);
+  // const [sessionActive, setSessionActive] = useState(false);
   const [mcqMistakes, setMcqMistakes] = useState(0);
   const [fillMistakes, setFillMistakes] = useState(0);
   const [mcqOrder, setMcqOrder] = useState([]);
   const [fillOrder, setFillOrder] = useState([]);
-  const [matchOrder, setMatchOrder] = useState([]);
+  // const [matchOrder, setMatchOrder] = useState([]);
+
+  const [timeLeft, setTimeLeft] = useState(4 * 60);
 
   const userId = localStorage.getItem("userId");
 
@@ -117,20 +119,29 @@ const LearnMode = ({ mode }) => {
 
   useEffect(() => { fetchSessions(); }, [userId]);
 
+  // Timers
   useEffect(() => {
     setLearningPhase("chat");
+    setTimeLeft(4 * 60);
 
     const chatTimer = setTimeout(() => {
       setLearningPhase("study");
+      setTimeLeft(4 * 60);
     }, 4 * 60 * 1000);
 
     const studyTimer = setTimeout(() => {
       setLearningPhase("activities");
+      setTimeLeft(0);
     }, 8 * 60 * 1000);
+
+    const countdown = setInterval(() => {
+      setTimeLeft(prev => Math.max(prev - 1, 0));
+    }, 1000);
 
     return () => {
       clearTimeout(chatTimer);
       clearTimeout(studyTimer);
+      clearInterval(countdown);
     };
   }, []);
 
@@ -140,13 +151,26 @@ const LearnMode = ({ mode }) => {
   const resetAll = () => {
     const indices = vocab.map((_, i) => i);
 
+    // setMcqOrder(shuffle(indices));
+    // setFillOrder(shuffle(indices));
+    // setMatchOrder(shuffle(indices));
+
+    // setMcqIndex(0); setMcqAnswered({}); setMcqDone(false); setMcqMistakes(0);
+    // setMatchState({}); setMatchSelected(null); setMatchDone(false);
+    // setFillIndex(0); setFillAnswered({}); setFillDone(false); setFillMistakes(0);
+
     setMcqOrder(shuffle(indices));
     setFillOrder(shuffle(indices));
-    setMatchOrder(shuffle(indices));
 
-    setMcqIndex(0); setMcqAnswered({}); setMcqDone(false); setMcqMistakes(0);
-    setMatchState({}); setMatchSelected(null); setMatchDone(false);
-    setFillIndex(0); setFillAnswered({}); setFillDone(false); setFillMistakes(0);
+    setMcqIndex(0);
+    setMcqAnswered({});
+    setMcqDone(false);
+    setMcqMistakes(0);
+
+    setFillIndex(0);
+    setFillAnswered({});
+    setFillDone(false);
+    setFillMistakes(0);
   };
 
   useEffect(() => { if (selectedSession) resetAll(); }, [selectedSession]);
@@ -204,7 +228,7 @@ const LearnMode = ({ mode }) => {
   };
 
   // Matching
-  const [matchSelected, setMatchSelected] = useState(null);
+  /* const [matchSelected, setMatchSelected] = useState(null);
   const [matchState, setMatchState] = useState({});
   const [matchDone, setMatchDone] = useState(false);
   const [leftWords, setLeftWords] = useState([]);
@@ -246,7 +270,7 @@ const LearnMode = ({ mode }) => {
       }), 600);
     }
   };
-
+ */
   // Fill
   const [fillIndex, setFillIndex] = useState(0);
   const [fillAnswered, setFillAnswered] = useState({});
@@ -300,9 +324,17 @@ const LearnMode = ({ mode }) => {
     }, 400);
   };
 
-  const sortedSessions = [...sessions].sort(
-    (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
-  );
+  const sortedSessions = useMemo(() => {
+    return [...sessions].sort(
+      (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+    );
+  }, [sessions]);
+
+  useEffect(() => {
+    if (!selectedSession && sortedSessions.length > 0 && learningPhase !== "chat") {
+      setSelectedSession(sortedSessions[0]);
+    }
+  }, [sortedSessions, selectedSession, learningPhase]);
 
   return (
     <div style={{
@@ -346,20 +378,33 @@ const LearnMode = ({ mode }) => {
       </div> */}
 
       {/* Content */}
+      {learningPhase !== "activities" && (
+        <div style={{
+          padding: "10px 16px",
+          textAlign: "center",
+          fontWeight: 800,
+          color: C.textMain,
+          background: "rgba(255,255,255,0.55)",
+          borderBottom: "2px solid rgba(255,255,255,0.9)"
+        }}>
+          Time remaining: {Math.floor(timeLeft / 60)}:
+          {String(timeLeft % 60).padStart(2, "0")}
+        </div>
+      )}
       <div style={{ flex: 1, overflow: "hidden" }}>
         {learningPhase === "chat" && (
           <ChatWindow
             mode={mode}
             chatHistory={chatHistory}
             setChatHistory={setChatHistory}
-            setSessionActiveGlobal={setSessionActive}
+            setSessionActiveGlobal={() => {}}
             refreshSessions={fetchSessions}
           />
         )}
 
         {learningPhase === "study" && (
           <div style={{ display: "flex", height: "100%", position: "relative" }}>
-            {!sidebarOpen && (
+            {/* {!sidebarOpen && (
               <button
                 onClick={() => setSidebarOpen(true)}
                 style={{
@@ -384,10 +429,10 @@ const LearnMode = ({ mode }) => {
               >
                 Show Sessions
               </button>
-            )}
+            )} */}
 
             {/* Left Session Sidebar */}
-            {sidebarOpen && (
+            {/* {sidebarOpen && (
               <div style={{
                 width: 270, flexShrink: 0,
                 background: "rgba(255,255,255,0.5)",
@@ -441,10 +486,10 @@ const LearnMode = ({ mode }) => {
                     No sessions yet 🌱<br />
                     <span style={{ fontSize: "0.78rem" }}>Chat to get started!</span>
                   </div>
-                )}
+                )} */}
 
                 {/* order sessions */}
-                {sortedSessions.map((s) => {
+                {/* {sortedSessions.map((s) => {
                   const isSelected = selectedSession?._id === s._id;
                   return (
                     <div key={s._id} onClick={() => setSelectedSession(s)} style={{
@@ -477,7 +522,7 @@ const LearnMode = ({ mode }) => {
                   );
                 })}
               </div>
-            )}
+            )} */}
 
             {/* Main */}
             <div style={{ flex: 1, padding: "24px 32px", overflowY: "auto" }}>
