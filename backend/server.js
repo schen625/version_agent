@@ -3,6 +3,7 @@ import express from "express";
 import cors from "cors";
 import mongoose from "mongoose";
 import authRoutes from "./routes/auth.js";
+import WordStat from "./models/WordStat.js";
 import { GoogleGenAI } from "@google/genai";
 
 const app = express();
@@ -202,6 +203,99 @@ Rules:
   return { original: agentReplyOriginal, translated: agentReplyTranslated };
 }
 
+async function generateAgentNudge(translateFrom, translateTo) {
+  // Reuse the same topic vocabulary as the opening so nudges feel consistent
+  const topicPool = [
+    "Introducing yourself", "Your family", "Your school or work",
+    "Your daily routine", "Your hobbies", "Your favorite food",
+    "Ordering food at a restaurant", "Shopping for clothes",
+    "Asking for directions", "Travel plans", "Describing your room or house",
+    "Talking about the weather", "Weekend plans", "Sports you like",
+    "Music, movies, or shows", "Your favorite place", "A recent trip",
+    "Health and feeling sick", "Making plans with a friend",
+    "Talking about goals and dreams", "Describing a photo",
+    "Comparing two things", "Giving opinions", "Telling a short story",
+    "Solving a small problem, like losing something"
+  ];
+  const picked = topicPool[Math.floor(Math.random() * topicPool.length)];
+  const seed = Math.floor(Math.random() * 1000000);
+
+  const nudgePrompt = `You are a warm, patient conversation partner helping someone practice ${translateTo}.
+
+The user has been quiet for about 30 seconds. Write a gentle, kind follow-up message that:
+- Acknowledges they may still be thinking, no pressure
+- Gently invites them to share something, OR offers ONE fresh topic idea they could chat about
+- Reminds them (briefly) that they can talk about anything they'd like
+
+Tone reference (do NOT copy, just match the warmth):
+"No rush! Whenever you're ready, you could tell me about your favorite place to relax. Of course, feel free to share anything else on your mind."
+
+For this nudge, lean toward this topic idea: ${picked}.
+Variation seed: ${seed}
+
+Rules:
+- Write ONLY in ${translateTo}
+- 1 to 2 short sentences total, gentle and friendly, never pushy or impatient
+- Sound caring, like a friend checking in
+- Do NOT use em-dashes (—) or en-dashes (–). Use commas, periods, colons, or "and" so it reads aloud naturally
+- No markdown, no bullets, no quotes around the message, no meta-commentary
+- Output ONLY the message itself`;
+
+  let agentReplyOriginal;
+  try {
+    const nudgeRes = await client.models.generateContent({
+      model: "gemini-3.1-flash-lite-preview",
+      contents: [{ role: "user", parts: [{ text: nudgePrompt }] }],
+      config: { temperature: 1.2, topP: 0.95 }
+    });
+    agentReplyOriginal = sanitizeAgentText(nudgeRes.text);
+  } catch (err) {
+    console.error("Agent nudge generation failed:", err);
+    agentReplyOriginal = "No rush! Whenever you're ready, you could tell me about your day or anything else on your mind.";
+  }
+
+  let agentReplyTranslated = "";
+  try {
+    const backTranslatePrompt = `Translate this from ${translateTo} to ${translateFrom}. Only output the translation. Do not use em-dashes (—) or en-dashes (–); use commas, periods, or "and" instead. ${agentReplyOriginal}`;
+    const backTranslateRes = await client.models.generateContent({
+      model: "gemini-3.1-flash-lite-preview",
+      contents: [{ role: "user", parts: [{ text: backTranslatePrompt }] }]
+    });
+    agentReplyTranslated = sanitizeAgentText(backTranslateRes.text);
+  } catch (err) {
+    console.error("Nudge back-translate failed:", err);
+  }
+
+  return { original: agentReplyOriginal, translated: agentReplyTranslated };
+}
+
+app.post("/api/session/nudge", async (req, res) => {
+  try {
+    const { sessionId, translateFrom, translateTo } = req.body;
+    if (!sessionId || !translateFrom || !translateTo) {
+      return res.status(400).json({ error: "Missing sessionId or languages" });
+    }
+
+    const session = await Session.findById(sessionId);
+    if (!session) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    const agent = await generateAgentNudge(translateFrom, translateTo);
+    session.messages.push({
+      role: "agent",
+      original: agent.original,
+      translated: agent.translated
+    });
+    await session.save();
+
+    res.json({ agent });
+  } catch (err) {
+    console.error("SESSION NUDGE ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/api/session/start", async (req, res) => {
   try {
     const { userId, mode, translateFrom, translateTo } = req.body;
@@ -369,6 +463,55 @@ app.get("/api/session/:sessionId", async (req, res) => {
 app.get("/api/user/:userId/sessions", async (req, res) => {
   const sessions = await Session.find({ userId: req.params.userId });
   res.json(sessions);
+});
+
+// Return every word-stat document for a user. The frontend turns these into
+// per-word error rates when choosing Review words.
+app.get("/api/user/:userId/word-stats", async (req, res) => {
+  try {
+    const stats = await WordStat.find({ userId: req.params.userId });
+    res.json(stats);
+  } catch (err) {
+    console.error("WORD STATS FETCH ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Record one or more practice attempts. Body can be either a single
+// { word, translation, correct } or { updates: [{ word, translation, correct }] }.
+// Each attempt increments `attempts`, and a wrong answer also increments `errors`.
+app.post("/api/user/:userId/word-stats", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    let updates = Array.isArray(req.body.updates) ? req.body.updates : null;
+    if (!updates) {
+      updates = [{
+        word: req.body.word,
+        translation: req.body.translation,
+        correct: req.body.correct,
+      }];
+    }
+
+    const ops = updates
+      .filter(u => u && u.word)
+      .map(u => ({
+        updateOne: {
+          filter: { userId, word: u.word },
+          update: {
+            $setOnInsert: { userId, word: u.word },
+            $set: { translation: u.translation, updatedAt: new Date() },
+            $inc: { attempts: 1, errors: u.correct ? 0 : 1 },
+          },
+          upsert: true,
+        },
+      }));
+
+    if (ops.length) await WordStat.bulkWrite(ops);
+    res.json({ ok: true, updated: ops.length });
+  } catch (err) {
+    console.error("WORD STATS UPDATE ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.listen(3001, () => {

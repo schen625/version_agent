@@ -1,7 +1,101 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import ChatWindow from "./ChatWindow";
 
 const shuffle = (arr) => [...arr].sort(() => Math.random() - 0.5);
+
+// Frequency = how many of the user's sessions a word appears in. "Least-seen"
+// words (lowest frequency) are surfaced for review.
+const computeFrequency = (sessions) => {
+  const freq = {};
+  sessions.forEach((s) =>
+    (s.vocab || []).forEach((v) => {
+      freq[v.word] = (freq[v.word] || 0) + 1;
+    })
+  );
+  return freq;
+};
+
+// Error rate = errors / attempts for a word (0 if never practiced).
+const errorRateOf = (word, stats) => {
+  const st = stats[word];
+  if (!st || !st.attempts) return 0;
+  return st.errors / st.attempts;
+};
+
+// Find a sentence that contains the word so Fill-in-the-Blank has a cloze to
+// show. Prefer the word's own session, then fall back to any session.
+const findSentenceForWord = (word, session, allSessions) => {
+  const search = (sess) =>
+    (sess?.sentences || []).find((s) => s.sentence && s.sentence.includes(word));
+  let hit = search(session);
+  if (!hit) {
+    for (const s of allSessions) {
+      hit = search(s);
+      if (hit) break;
+    }
+  }
+  return hit
+    ? { sentence: hit.sentence, translation: hit.translation }
+    : { sentence: null, translation: null };
+};
+
+// For one session, pick 4 review words: 2 highest error rate + 2 lowest freq.
+const computeSessionReviewWords = (session, allSessions, stats, freq) => {
+  const vocab = session?.vocab || [];
+  if (!vocab.length) return [];
+
+  const byError = [...vocab].sort(
+    (a, b) => errorRateOf(b.word, stats) - errorRateOf(a.word, stats)
+  );
+  const errorPicks = byError.slice(0, 2);
+  const picked = new Set(errorPicks.map((v) => v.word));
+
+  const byFreq = vocab
+    .filter((v) => !picked.has(v.word))
+    .sort((a, b) => (freq[a.word] || 0) - (freq[b.word] || 0));
+  const freqPicks = byFreq.slice(0, 2);
+
+  return [...errorPicks, ...freqPicks].map((v) => {
+    const s = findSentenceForWord(v.word, session, allSessions);
+    return {
+      word: v.word,
+      translation: v.translation,
+      sentence: s.sentence,
+      sentenceTranslation: s.translation,
+    };
+  });
+};
+
+// Build the accumulating review pool for the selected session:
+// this session's 4 words + every earlier session's 4 words (deduped by word).
+const computeReviewPool = (selectedSession, sessions, stats) => {
+  if (!selectedSession) return [];
+  const freq = computeFrequency(sessions);
+  const selDate = new Date(selectedSession.createdAt).getTime();
+
+  const prior = sessions
+    .filter(
+      (s) =>
+        s._id !== selectedSession._id &&
+        new Date(s.createdAt).getTime() < selDate
+    )
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+  const current = computeSessionReviewWords(selectedSession, sessions, stats, freq);
+  const priorWords = prior.flatMap((s) =>
+    computeSessionReviewWords(s, sessions, stats, freq)
+  );
+
+  const seen = new Set();
+  const deduped = [];
+  for (const w of [...current, ...priorWords]) {
+    if (!seen.has(w.word)) {
+      seen.add(w.word);
+      deduped.push(w);
+    }
+  }
+  return deduped;
+};
 const C = {
   bg: "linear-gradient(145deg, #fdf6f0 0%, #f3eeff 50%, #e8f8f5 100%)",
   card: "rgba(255,255,255,0.75)",
@@ -94,6 +188,196 @@ const SectionDivider = ({ emoji, title }) => (
   </div>
 );
 
+// Review activities run the same Matching + Fill-in-the-Blank exercises as
+// Learn, but over the accumulating review pool instead of one session's vocab.
+const ReviewActivities = ({ words, recordAttempt }) => {
+  // Matching
+  const [matchSelected, setMatchSelected] = useState(null);
+  const [matchState, setMatchState] = useState({});
+  const [matchDone, setMatchDone] = useState(false);
+  const [leftWords, setLeftWords] = useState([]);
+  const [rightWords, setRightWords] = useState([]);
+
+  // Fill
+  const [fillIndex, setFillIndex] = useState(0);
+  const [fillAnswered, setFillAnswered] = useState({});
+  const [fillDone, setFillDone] = useState(false);
+  const [fillMistakes, setFillMistakes] = useState(0);
+  const [fillOrder, setFillOrder] = useState([]);
+
+  const reset = () => {
+    setMatchSelected(null);
+    setMatchState({});
+    setMatchDone(false);
+    setLeftWords(shuffle(words));
+    setRightWords(shuffle(words));
+    setFillIndex(0);
+    setFillAnswered({});
+    setFillDone(false);
+    setFillMistakes(0);
+    setFillOrder(shuffle(words.map((_, i) => i)));
+  };
+
+  // Re-initialise whenever the review pool changes.
+  useEffect(() => {
+    reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [words]);
+
+  useEffect(() => { setFillAnswered({}); }, [fillIndex]);
+
+  const currentFill = words[fillOrder[fillIndex]];
+  const fillOptions = useMemo(() => {
+    if (!words.length || !currentFill) return [];
+    const correct = currentFill.word;
+    const wrong = shuffle(
+      words.filter((v) => v.word !== correct).map((v) => v.word)
+    ).slice(0, 4);
+    return shuffle([correct, ...wrong]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fillIndex, words]);
+
+  if (!words.length) {
+    return (
+      <p style={{ color: C.textMuted, fontWeight: 700, fontSize: "0.85rem" }}>
+        No review words yet — practice a session first! 🌱
+      </p>
+    );
+  }
+
+  const handleMatch = (word, side) => {
+    if (matchState[word] === "correct") return;
+    if (!matchSelected) { setMatchSelected({ word, side }); return; }
+    const first = matchSelected, second = { word, side };
+    if (first.side === second.side) { setMatchSelected(null); return; }
+    const left = first.side === "left" ? first : second;
+    const right = first.side === "right" ? first : second;
+    const correct = words.find((v) => v.word === left.word)?.translation;
+    const isCorrect = correct === right.word;
+    recordAttempt(left.word, correct, isCorrect);
+    setMatchState((p) => ({
+      ...p,
+      [left.word]: isCorrect ? "correct" : "wrong",
+      [right.word]: isCorrect ? "correct" : "wrong",
+    }));
+    setMatchSelected(null);
+    if (isCorrect) {
+      const total = Object.values({ ...matchState, [left.word]: "correct", [right.word]: "correct" })
+        .filter((v) => v === "correct").length;
+      if (total / 2 === words.length) setMatchDone(true);
+    } else {
+      setTimeout(() => setMatchState((p) => {
+        const c = { ...p }; delete c[left.word]; delete c[right.word]; return c;
+      }), 600);
+    }
+  };
+
+  const answerFill = (opt) => {
+    const correct = currentFill?.word;
+    const isCorrect = opt === correct;
+    recordAttempt(currentFill?.word, currentFill?.translation, isCorrect);
+    setFillAnswered((p) => ({ ...p, [opt]: isCorrect ? "correct" : "wrong" }));
+    if (!isCorrect) { setFillMistakes((m) => m + 1); return; }
+    setTimeout(() => {
+      if (fillIndex + 1 >= words.length) {
+        if (fillMistakes === 0) setFillDone(true);
+        else { setFillIndex(0); setFillMistakes(0); setFillAnswered({}); }
+      } else {
+        setFillIndex((i) => i + 1);
+      }
+    }, 400);
+  };
+
+  const cloze = currentFill?.sentence
+    ? currentFill.sentence.replace(currentFill.word, "______")
+    : "______";
+
+  return (
+    <>
+      {/* Matching */}
+      <SectionDivider emoji="🔗" title="Review · Matching" />
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+        <RestartBtn onClick={reset} />
+      </div>
+      {!matchDone ? (
+        <div style={{ display: "flex", gap: 20 }}>
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
+            {leftWords.map((v) => {
+              const st = matchState[v.word];
+              const sel = matchSelected?.word === v.word;
+              return (
+                <div key={v.word} onClick={() => handleMatch(v.word, "left")} style={{
+                  padding: "11px 18px", borderRadius: 14, cursor: "pointer",
+                  pointerEvents: matchState[v.word] === "correct" ? "none" : "auto",
+                  fontWeight: 800, fontSize: "0.9rem",
+                  background: st === "correct" ? "rgba(181,234,215,0.5)"
+                    : st === "wrong" ? "rgba(255,183,197,0.5)"
+                      : sel ? "rgba(201,179,245,0.3)" : "rgba(255,255,255,0.75)",
+                  border: `2px solid ${st === "correct" ? "rgba(127,201,169,0.5)"
+                    : st === "wrong" ? "rgba(255,143,163,0.5)"
+                      : sel ? "rgba(201,179,245,0.6)" : C.border}`,
+                  color: st === "correct" ? "#3a9e75" : st === "wrong" ? "#cc4466" : C.textMain,
+                  boxShadow: sel ? "0 4px 14px rgba(201,179,245,0.3)" : "0 2px 8px rgba(180,160,220,0.1)",
+                  transition: "all 0.15s",
+                }}>
+                  {v.word}
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
+            {rightWords.map((v) => {
+              const st = matchState[v.translation];
+              const sel = matchSelected?.word === v.translation;
+              return (
+                <div key={v.translation} onClick={() => handleMatch(v.translation, "right")} style={{
+                  padding: "11px 18px", borderRadius: 14, cursor: "pointer",
+                  pointerEvents: matchState[v.translation] === "correct" ? "none" : "auto",
+                  fontWeight: 700, fontSize: "0.88rem",
+                  background: st === "correct" ? "rgba(181,234,215,0.5)"
+                    : st === "wrong" ? "rgba(255,183,197,0.5)"
+                      : sel ? "rgba(168,216,234,0.35)" : "rgba(255,255,255,0.75)",
+                  border: `2px solid ${st === "correct" ? "rgba(127,201,169,0.5)"
+                    : st === "wrong" ? "rgba(255,143,163,0.5)"
+                      : sel ? "rgba(168,216,234,0.7)" : C.border}`,
+                  color: st === "correct" ? "#3a9e75" : st === "wrong" ? "#cc4466" : C.textSub,
+                  transition: "all 0.15s",
+                }}>
+                  {v.translation}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : <DoneState />}
+
+      {/* Fill in the Blank */}
+      <SectionDivider emoji="✍️" title="Review · Fill in the Blank" />
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+        <RestartBtn onClick={reset} />
+        <span style={{ fontSize: "0.78rem", color: C.textMuted, fontWeight: 700 }}>
+          {fillDone ? "Complete!" : `${fillIndex + 1} / ${words.length}`}
+        </span>
+      </div>
+      {!fillDone ? (
+        <div style={{ ...glassCard, padding: "22px 26px", marginBottom: 40 }}>
+          <p style={{ margin: "0 0 16px", fontSize: "1rem", lineHeight: 1.7, fontWeight: 700, color: C.textSub }}>
+            {cloze}
+            <span style={{ display: "block", fontSize: 12, color: "gray", marginTop: 6 }}>
+              {currentFill?.sentenceTranslation || `(${currentFill?.translation})`}
+            </span>
+          </p>
+          <div style={{ display: "flex", flexWrap: "wrap" }}>
+            {fillOptions.map((o) => (
+              <QuizBtn key={o} state={fillAnswered[o]} onClick={() => answerFill(o)}>{o}</QuizBtn>
+            ))}
+          </div>
+        </div>
+      ) : <DoneState />}
+    </>
+  );
+};
+
 const LearnMode = ({ mode, onBack }) => {
   const [tab, setTab] = useState("chat");
   const [sessions, setSessions] = useState([]);
@@ -101,6 +385,10 @@ const LearnMode = ({ mode, onBack }) => {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [chatHistory, setChatHistory] = useState([]);
   const [sessionActive, setSessionActive] = useState(false);
+  // Session identity is lifted here (not kept inside ChatWindow) so it survives
+  // ChatWindow unmounting on tab switches, keeping the chat UI and the
+  // Start/End button in sync with chatHistory.
+  const [chatSessionId, setChatSessionId] = useState(null);
   const [mcqMistakes, setMcqMistakes] = useState(0);
   const [fillMistakes, setFillMistakes] = useState(0);
   const [mcqOrder, setMcqOrder] = useState([]);
@@ -108,20 +396,61 @@ const LearnMode = ({ mode, onBack }) => {
   const [matchOrder, setMatchOrder] = useState([]);
   const [activitiesStarted, setActivitiesStarted] = useState(false);
 
+  const [wordStats, setWordStats] = useState({});
+  const [reviewWords, setReviewWords] = useState([]);
+
   const userId = localStorage.getItem("userId");
 
-  const fetchSessions = () => {
+  const fetchSessions = useCallback(() => {
     if (!userId) return;
     fetch(`http://localhost:3001/api/user/${userId}/sessions`)
       .then(r => r.json()).then(setSessions);
-  };
+  }, [userId]);
 
-  useEffect(() => { fetchSessions(); }, [userId]);
+  useEffect(() => { fetchSessions(); }, [fetchSessions]);
 
-  const vocab = selectedSession?.vocab || [];
-  const sentences = selectedSession?.sentences || [];
+  // Hydrate per-word error stats from the backend.
+  useEffect(() => {
+    if (!userId) return;
+    fetch(`http://localhost:3001/api/user/${userId}/word-stats`)
+      .then(r => r.json())
+      .then(arr => {
+        const map = {};
+        (arr || []).forEach(s => {
+          map[s.word] = { attempts: s.attempts, errors: s.errors, translation: s.translation };
+        });
+        setWordStats(map);
+      })
+      .catch(() => {});
+  }, [userId]);
 
-  const resetAll = () => {
+  // Record a practice attempt: update local stats optimistically and persist.
+  const recordAttempt = useCallback((word, translation, correct) => {
+    if (!word) return;
+    setWordStats(prev => {
+      const cur = prev[word] || { attempts: 0, errors: 0 };
+      return {
+        ...prev,
+        [word]: {
+          attempts: cur.attempts + 1,
+          errors: cur.errors + (correct ? 0 : 1),
+          translation,
+        },
+      };
+    });
+    if (userId) {
+      fetch(`http://localhost:3001/api/user/${userId}/word-stats`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ word, translation, correct }),
+      }).catch(() => {});
+    }
+  }, [userId]);
+
+  const vocab = useMemo(() => selectedSession?.vocab || [], [selectedSession]);
+  const sentences = useMemo(() => selectedSession?.sentences || [], [selectedSession]);
+
+  const resetAll = useCallback(() => {
     const indices = vocab.map((_, i) => i);
 
     setMcqOrder(shuffle(indices));
@@ -131,14 +460,23 @@ const LearnMode = ({ mode, onBack }) => {
     setMcqIndex(0); setMcqAnswered({}); setMcqDone(false); setMcqMistakes(0);
     setMatchState({}); setMatchSelected(null); setMatchDone(false);
     setFillIndex(0); setFillAnswered({}); setFillDone(false); setFillMistakes(0);
-  };
+  }, [vocab]);
 
   useEffect(() => {
     if (selectedSession) {
       resetAll();
       setActivitiesStarted(false);
     }
-  }, [selectedSession]);
+  }, [selectedSession, resetAll]);
+
+  // Snapshot the review pool when the user enters the activity phase so it
+  // stays stable while they practice (rather than reshuffling on every answer).
+  useEffect(() => {
+    if (activitiesStarted) {
+      setReviewWords(computeReviewPool(selectedSession, sessions, wordStats));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activitiesStarted, selectedSession]);
 
   // MCQ
   const [mcqIndex, setMcqIndex] = useState(0);
@@ -167,6 +505,8 @@ const LearnMode = ({ mode, onBack }) => {
     const correct = vocab[currentMCQIndex]?.translation;
     const isCorrect = opt === correct;
 
+    recordAttempt(vocab[currentMCQIndex]?.word, vocab[currentMCQIndex]?.translation, isCorrect);
+
     setMcqAnswered(p => ({
       ...p,
       [opt]: isCorrect ? "correct" : "wrong"
@@ -174,7 +514,7 @@ const LearnMode = ({ mode, onBack }) => {
 
     if (!isCorrect) {
       setMcqMistakes(m => m + 1);
-      return; 
+      return;
     }
 
     setTimeout(() => {
@@ -214,6 +554,7 @@ const LearnMode = ({ mode, onBack }) => {
     const right = first.side === "right" ? first : second;
     const correct = vocab.find(v => v.word === left.word)?.translation;
     const isCorrect = correct === right.word;
+    recordAttempt(left.word, correct, isCorrect);
     setMatchState(p => ({
       ...p, [left.word]: isCorrect ? "correct" : "wrong",
       [right.word]: isCorrect ? "correct" : "wrong",
@@ -254,9 +595,11 @@ const LearnMode = ({ mode, onBack }) => {
   }, [fillIndex, vocab, fillOrder]);
 
   const answerFill = (opt) => {
-    const currentFillIndex = fillOrder[fillIndex]; 
+    const currentFillIndex = fillOrder[fillIndex];
     const correct = vocab[currentFillIndex]?.word;
     const isCorrect = opt === correct;
+
+    recordAttempt(vocab[currentFillIndex]?.word, vocab[currentFillIndex]?.translation, isCorrect);
 
     setFillAnswered(p => ({
       ...p,
@@ -365,7 +708,10 @@ const LearnMode = ({ mode, onBack }) => {
             mode={mode}
             chatHistory={chatHistory}
             setChatHistory={setChatHistory}
-            setSessionActiveGlobal={setSessionActive}
+            sessionId={chatSessionId}
+            setSessionId={setChatSessionId}
+            sessionActive={sessionActive}
+            setSessionActive={setSessionActive}
             refreshSessions={fetchSessions}
           />
         )}
@@ -727,6 +1073,19 @@ const LearnMode = ({ mode, onBack }) => {
                           </div>
                         </div>
                       ) : <DoneState />}
+
+                      {/* ── REVIEW ── 2 highest-error + 2 lowest-frequency words from
+                          this session, accumulated with every earlier session. */}
+                      <SectionDivider emoji="🔁" title="Review" />
+                      <p style={{
+                        margin: "0 0 16px", fontSize: "0.82rem",
+                        color: C.textMuted, fontWeight: 700, lineHeight: 1.5,
+                      }}>
+                        Your trickiest and least-seen words — 2 highest error rate and 2 lowest
+                        frequency from this session, plus everything carried over from earlier days
+                        {reviewWords.length > 0 && ` (${reviewWords.length} word${reviewWords.length === 1 ? "" : "s"})`}.
+                      </p>
+                      <ReviewActivities words={reviewWords} recordAttempt={recordAttempt} />
                     </>
                   )}
                 </>

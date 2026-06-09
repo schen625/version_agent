@@ -20,3 +20,17 @@ export const sendMessage = async ({
   return res.json();
 };
 
+export const requestNudge = async ({
+  sessionId,
+  translateFrom,
+  translateTo,
+}) => {
+  const res = await fetch("http://localhost:3001/api/session/nudge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId, translateFrom, translateTo }),
+  });
+  if (!res.ok) throw new Error("Failed to fetch nudge");
+  return res.json();
+};
+

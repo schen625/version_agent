@@ -2,23 +2,85 @@ import { useState, useRef, useEffect } from "react";
 import SpeechRecognition, { useSpeechRecognition } from "react-speech-recognition";
 import ChatMessage from "./ChatMessage";
 import LanguageSelector from "./LanguageSelector";
-import { sendMessage } from "../api/chat";
+import { sendMessage, requestNudge } from "../api/chat";
 import avatar from "../assets/user-avatar.png";
 
+const NUDGE_DELAY_MS = 30000;
+const MAX_NUDGES = 3;
+
 //Sessions
-const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSessionActiveGlobal }) => {
-  const [sessionId, setSessionId] = useState(null);
-  const [sessionActive, setSessionActive] = useState(false);
+const ChatWindow = ({
+  mode,
+  chatHistory,
+  setChatHistory,
+  refreshSessions,
+  sessionId,
+  setSessionId,
+  sessionActive,
+  setSessionActive,
+}) => {
   const [recording, setRecording] = useState(false);
-  const [translateFrom, setTranslateFrom] = useState("");
-  const [translateTo, setTranslateTo] = useState("");
+  const [translateFrom, setTranslateFrom] = useState("en");
+  const [translateTo, setTranslateTo] = useState("zh");
   const messagesEndRef = useRef(null);
+
+  // Idle-nudge state. After every agent message, start a 30s timer; if the
+  // user hasn't interacted by then, ask the backend for a gentle follow-up.
+  const nudgeTimerRef = useRef(null);
+  const nudgeCountRef = useRef(0);
+  const sessionActiveRef = useRef(false);
 
   const { transcript, resetTranscript, listening } = useSpeechRecognition();
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatHistory]);
+
+  useEffect(() => {
+    sessionActiveRef.current = sessionActive;
+  }, [sessionActive]);
+
+  // Cleanup on unmount so a stray timer can't fire after the component is gone
+  useEffect(() => () => {
+    if (nudgeTimerRef.current) clearTimeout(nudgeTimerRef.current);
+  }, []);
+
+  const cancelNudgeTimer = () => {
+    if (nudgeTimerRef.current) {
+      clearTimeout(nudgeTimerRef.current);
+      nudgeTimerRef.current = null;
+    }
+  };
+
+  const scheduleNudgeTimer = (ctx) => {
+    cancelNudgeTimer();
+    if (nudgeCountRef.current >= MAX_NUDGES) return;
+    nudgeTimerRef.current = setTimeout(async () => {
+      nudgeTimerRef.current = null;
+      if (!sessionActiveRef.current) return;
+      try {
+        const data = await requestNudge({
+          sessionId: ctx.sessionId,
+          translateFrom: ctx.translateFrom,
+          translateTo: ctx.translateTo,
+        });
+        if (!sessionActiveRef.current) return;
+        if (data?.agent?.original) {
+          nudgeCountRef.current += 1;
+          setChatHistory(prev => [...prev, {
+            role: "agent",
+            original: data.agent.original,
+            translated: ctx.mode === "learn" ? data.agent.translated : null,
+          }]);
+          speakText(data.agent.original, getLangCode(ctx.translateTo));
+          // Re-arm in case the user is still silent
+          scheduleNudgeTimer(ctx);
+        }
+      } catch (err) {
+        console.error("Nudge failed:", err);
+      }
+    }, NUDGE_DELAY_MS);
+  };
 
   if (!SpeechRecognition.browserSupportsSpeechRecognition()) {
     return <p style={{ padding: 20, color: "#9178cc" }}>Browser does not support speech recognition.</p>;
@@ -27,30 +89,48 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
   //Audio Code
   const getVoiceForLang = (langCode) => {
     const voices = speechSynthesis.getVoices();
-
+    const base = langCode.split("-")[0];
+    // Only return a voice that actually matches the target language. Falling
+    // back to voices[0] (usually English) would try to read e.g. Chinese text
+    // with an English voice, which produces no audible speech.
     return (
       voices.find(v => v.lang === langCode) ||
-      voices.find(v => v.lang.startsWith(langCode.split("-")[0])) ||
-      voices[0]
+      voices.find(v => v.lang.toLowerCase().startsWith(base)) ||
+      null
     );
   };
 
   const speakText = (text, lang = "en-US") => {
-    const utterance = new SpeechSynthesisUtterance(text);
+    const speak = () => {
+      const utterance = new SpeechSynthesisUtterance(text);
+      const voice = getVoiceForLang(lang);
+      if (voice) utterance.voice = voice;
+      utterance.lang = lang;
+      utterance.rate = 1;
+      utterance.pitch = 1;
+      speechSynthesis.cancel();
+      speechSynthesis.speak(utterance);
+    };
 
-    const voice = getVoiceForLang(lang);
-    if (voice) utterance.voice = voice;
-
-    utterance.lang = lang;
-    utterance.rate = 1;
-    utterance.pitch = 1;
-
-    speechSynthesis.cancel();
-    speechSynthesis.speak(utterance);
+    // Voices can load asynchronously (especially on first use). If they aren't
+    // ready yet, wait for the voiceschanged event so the right voice is picked.
+    if (speechSynthesis.getVoices().length === 0) {
+      speechSynthesis.addEventListener("voiceschanged", speak, { once: true });
+    } else {
+      speak();
+    }
   };
 
+  // Map both language codes (en, zh, …) and full names to BCP-47 voice locales.
   const getLangCode = (lang) => {
-    const map = { english: "en-US", spanish: "es-ES", french: "fr-FR", german: "de-DE" };
+    const map = {
+      en: "en-US", english: "en-US",
+      es: "es-ES", spanish: "es-ES",
+      fr: "fr-FR", french: "fr-FR",
+      de: "de-DE", german: "de-DE",
+      zh: "zh-CN", chinese: "zh-CN",
+      auto: "en-US",
+    };
     return map[lang?.toLowerCase()] || "en-US";
   };
 
@@ -69,7 +149,8 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
     });
     const data = await res.json();
     setSessionId(data._id); setSessionActive(true);
-    setSessionActiveGlobal(true);
+    sessionActiveRef.current = true;
+    nudgeCountRef.current = 0;
 
     if (data.agent && data.agent.original) {
       const openingMsg = {
@@ -79,6 +160,12 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
       };
       setChatHistory([openingMsg]);
       speakText(data.agent.original, getLangCode(translateTo));
+      scheduleNudgeTimer({
+        sessionId: data._id,
+        translateFrom,
+        translateTo,
+        mode,
+      });
     } else {
       setChatHistory([]);
     }
@@ -89,6 +176,9 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
     if (!userMessage) return;
     resetTranscript(); setRecording(false);
     if (!sessionActive) { alert("Start session first"); return; }
+    // User just spoke. Drop any pending nudge and reset the counter.
+    cancelNudgeTimer();
+    nudgeCountRef.current = 0;
     try {
       const res = await sendMessage({ sessionId, message: userMessage, translateFrom, translateTo, mode });
       speakText(res.agent.original, getLangCode(translateTo));
@@ -104,18 +194,30 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
         { role: "agent", original: res.agent.original, translated: null },
         ]);
       }
+      // Re-arm idle nudge after the agent's reply lands
+      scheduleNudgeTimer({ sessionId, translateFrom, translateTo, mode });
     } catch (err) { console.error(err); }
   };
 
   const endSession = async () => {
     SpeechRecognition.stopListening(); setRecording(false);
-    await fetch("http://localhost:3001/api/session/end", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId }),
-    });
-    setSessionActive(false); setSessionId(null);
-    setSessionActiveGlobal(false); setChatHistory([]);
-    refreshSessions();
+    cancelNudgeTimer();
+    nudgeCountRef.current = 0;
+    sessionActiveRef.current = false;
+    try {
+      await fetch("http://localhost:3001/api/session/end", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      });
+    } catch (err) {
+      console.error("End session failed:", err);
+    } finally {
+      // Always reset the UI, even if the summary request errored, so we never
+      // leave stale messages on screen with an inactive session.
+      setSessionActive(false); setSessionId(null);
+      setChatHistory([]);
+      refreshSessions();
+    }
   };
   
   const toggleListening = () => {
@@ -133,6 +235,11 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
         alert("Select a source language first");
         return;
       }
+
+      // User is starting to speak. Cancel any pending idle nudge and reset
+      // the counter so they get a fresh 30s window after their reply.
+      cancelNudgeTimer();
+      nudgeCountRef.current = 0;
 
       resetTranscript();
       setRecording(true);

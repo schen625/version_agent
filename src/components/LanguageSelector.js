@@ -1,11 +1,6 @@
 
-//need to change to a few select langauges
 const LANGUAGES = [
-  { code: "auto", name: "Detect Language" },
   { code: "en", name: "English" },
-  { code: "es", name: "Spanish" },
-  { code: "fr", name: "French" },
-  { code: "de", name: "German" },
   { code: "zh", name: "Chinese" },
 ];
 
