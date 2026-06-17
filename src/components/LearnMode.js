@@ -95,15 +95,20 @@ const SectionDivider = ({ emoji, title }) => (
 );
 
 const LearnMode = ({ mode }) => {
-  const [tab, setTab] = useState("chat");
+  const [learningPhase, setLearningPhase] = useState("chat");
   const [sessions, setSessions] = useState([]);
   const [selectedSession, setSelectedSession] = useState(null);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // const [sidebarOpen, setSidebarOpen] = useState(true);
   const [chatHistory, setChatHistory] = useState([]);
-  const [sessionActive, setSessionActive] = useState(false);
+  // const [sessionActive, setSessionActive] = useState(false);
   const [mcqMistakes, setMcqMistakes] = useState(0);
   const [fillMistakes, setFillMistakes] = useState(0);
   const [mcqOrder, setMcqOrder] = useState([]);
+
+  const [fillOrder, setFillOrder] = useState([]);
+  // const [matchOrder, setMatchOrder] = useState([]);
+
+  const [timeLeft, setTimeLeft] = useState(4 * 60);
   const [fillSubset, setFillSubset] = useState([]);
 
   const userId = localStorage.getItem("userId");
@@ -116,6 +121,58 @@ const LearnMode = ({ mode }) => {
 
   useEffect(() => { fetchSessions(); }, [userId]);
 
+  // Timers
+  useEffect(() => {
+    setLearningPhase("chat");
+    setTimeLeft(4 * 60);
+
+    const chatTimer = setTimeout(() => {
+      setLearningPhase("study");
+      setTimeLeft(4 * 60);
+    }, 4 * 60 * 1000);
+
+    const studyTimer = setTimeout(() => {
+      setLearningPhase("activities");
+      setTimeLeft(0);
+    }, 8 * 60 * 1000);
+
+    const countdown = setInterval(() => {
+      setTimeLeft(prev => Math.max(prev - 1, 0));
+    }, 1000);
+
+    return () => {
+      clearTimeout(chatTimer);
+      clearTimeout(studyTimer);
+      clearInterval(countdown);
+    };
+  }, []);
+
+  const vocab = useMemo(() => selectedSession?.vocab || [], [selectedSession]);
+  const sentences = useMemo(() => selectedSession?.sentences || [], [selectedSession]);
+
+  const resetAll = () => {
+    const indices = vocab.map((_, i) => i);
+
+    // setMcqOrder(shuffle(indices));
+    // setFillOrder(shuffle(indices));
+    // setMatchOrder(shuffle(indices));
+
+    // setMcqIndex(0); setMcqAnswered({}); setMcqDone(false); setMcqMistakes(0);
+    // setMatchState({}); setMatchSelected(null); setMatchDone(false);
+    // setFillIndex(0); setFillAnswered({}); setFillDone(false); setFillMistakes(0);
+
+    setMcqOrder(shuffle(indices));
+    setFillOrder(shuffle(indices));
+
+    setMcqIndex(0);
+    setMcqAnswered({});
+    setMcqDone(false);
+    setMcqMistakes(0);
+
+    setFillIndex(0);
+    setFillAnswered({});
+    setFillDone(false);
+    setFillMistakes(0);
   const vocab = selectedSession?.vocab || [];
   const sentences = (selectedSession?.sentences || []).slice(0, 4);
   const learnQuestions = selectedSession?.learnQuestions || [];
@@ -269,6 +326,17 @@ const LearnMode = ({ mode }) => {
     }, 400);
   };
 
+  const sortedSessions = useMemo(() => {
+    return [...sessions].sort(
+      (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+    );
+  }, [sessions]);
+
+  useEffect(() => {
+    if (!selectedSession && sortedSessions.length > 0 && learningPhase !== "chat") {
+      setSelectedSession(sortedSessions[0]);
+    }
+  }, [sortedSessions, selectedSession, learningPhase]);
   const resetFill = () => {
     const validQuestions = learnQuestions.filter(q =>
       q && q.answer && vocab.some(v => v.word === q.answer)
@@ -280,10 +348,6 @@ const LearnMode = ({ mode }) => {
     setFillDone(false);
     setFillMistakes(0);
   };
-
-  const sortedSessions = [...sessions].sort(
-    (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
-  );
 
   return (
     <div style={{
@@ -297,7 +361,7 @@ const LearnMode = ({ mode }) => {
         ::-webkit-scrollbar-thumb { background: rgba(201,179,245,0.35); border-radius: 4px; }
       `}</style>
 
-      {/* Top Navigation (Chat/Learn) */}
+      {/* Top Navigation (Chat/Learn)
       <div style={{
         display: "flex",
         background: "rgba(255,255,255,0.65)",
@@ -324,23 +388,36 @@ const LearnMode = ({ mode }) => {
             {label}
           </button>
         ))}
-      </div>
+      </div> */}
 
       {/* Content */}
+      {learningPhase !== "activities" && (
+        <div style={{
+          padding: "10px 16px",
+          textAlign: "center",
+          fontWeight: 800,
+          color: C.textMain,
+          background: "rgba(255,255,255,0.55)",
+          borderBottom: "2px solid rgba(255,255,255,0.9)"
+        }}>
+          Time remaining: {Math.floor(timeLeft / 60)}:
+          {String(timeLeft % 60).padStart(2, "0")}
+        </div>
+      )}
       <div style={{ flex: 1, overflow: "hidden" }}>
-        {tab === "chat" && (
+        {learningPhase === "chat" && (
           <ChatWindow
             mode={mode}
             chatHistory={chatHistory}
             setChatHistory={setChatHistory}
-            setSessionActiveGlobal={setSessionActive}
+            setSessionActiveGlobal={() => {}}
             refreshSessions={fetchSessions}
           />
         )}
 
-        {tab === "learn" && (
+        {learningPhase === "study" && (
           <div style={{ display: "flex", height: "100%", position: "relative" }}>
-            {!sidebarOpen && (
+            {/* {!sidebarOpen && (
               <button
                 onClick={() => setSidebarOpen(true)}
                 style={{
@@ -365,10 +442,10 @@ const LearnMode = ({ mode }) => {
               >
                 Show Sessions
               </button>
-            )}
+            )} */}
 
             {/* Left Session Sidebar */}
-            {sidebarOpen && (
+            {/* {sidebarOpen && (
               <div style={{
                 width: 270, flexShrink: 0,
                 background: "rgba(255,255,255,0.5)",
@@ -422,10 +499,10 @@ const LearnMode = ({ mode }) => {
                     No sessions yet 🌱<br />
                     <span style={{ fontSize: "0.78rem" }}>Chat to get started!</span>
                   </div>
-                )}
+                )} */}
 
                 {/* order sessions */}
-                {sortedSessions.map((s) => {
+                {/* {sortedSessions.map((s) => {
                   const isSelected = selectedSession?._id === s._id;
                   return (
                     <div key={s._id} onClick={() => setSelectedSession(s)} style={{
@@ -458,7 +535,7 @@ const LearnMode = ({ mode }) => {
                   );
                 })}
               </div>
-            )}
+            )} */}
 
             {/* Main */}
             <div style={{ flex: 1, padding: "24px 32px", overflowY: "auto" }}>
@@ -561,6 +638,72 @@ const LearnMode = ({ mode }) => {
                 </>
               )}
             </div>
+          </div>
+        )}
+
+        {learningPhase === "activities" && (
+          <div style={{ flex: 1, padding: "24px 32px", overflowY: "auto" }}>
+            {/* MCQ */}
+            <SectionDivider emoji="🎯" title="Vocab Quiz" />
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+              <RestartBtn onClick={resetAll} />
+              <span style={{ fontSize: "0.78rem", color: C.textMuted, fontWeight: 700 }}>
+                {mcqDone ? "Complete!" : `${mcqIndex + 1} / ${vocab.length}`}
+              </span>
+            </div>
+
+            {!mcqDone ? (
+              <div style={{ ...glassCard, padding: "22px 26px" }}>
+                <p style={{ margin: "0 0 16px", fontSize: "1.15rem", fontWeight: 900, color: C.textMain }}>
+                  {vocab[currentMCQIndex]?.word}
+                </p>
+                <p style={{ margin: "0 0 14px", fontSize: "0.82rem", color: C.textMuted, fontWeight: 700 }}>
+                  Pick the correct translation 👇
+                </p>
+                <div style={{ display: "flex", flexWrap: "wrap" }}>
+                  {mcqOptions.map(o => (
+                    <QuizBtn key={o} state={mcqAnswered[o]} onClick={() => answerMCQ(o)}>
+                      {o}
+                    </QuizBtn>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <DoneState />
+            )}
+
+            {/* Fill in The Blank */}
+            <SectionDivider emoji="✍️" title="Fill in the Blank" />
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+              <RestartBtn onClick={resetAll} />
+              <span style={{ fontSize: "0.78rem", color: C.textMuted, fontWeight: 700 }}>
+                {fillDone ? "Complete!" : `${fillIndex + 1} / ${vocab.length}`}
+              </span>
+            </div>
+
+            {!fillDone ? (
+              <div style={{ ...glassCard, padding: "22px 26px", marginBottom: 40 }}>
+                <div style={{ margin: "0 0 16px", fontSize: "1rem", lineHeight: 1.7, fontWeight: 700, color: C.textSub }}>
+                  {sentences[currentFillIndex]?.sentence?.replace(
+                    vocab[currentFillIndex]?.word,
+                    "______"
+                  )}
+                  <p style={{ fontSize: 12, color: "gray" }}>
+                    {sentences[currentFillIndex]?.translation}
+                  </p>
+                </div>
+
+                <div style={{ display: "flex", flexWrap: "wrap" }}>
+                  {fillOptions.map(o => (
+                    <QuizBtn key={o} state={fillAnswered[o]} onClick={() => answerFill(o)}>
+                      {o}
+                    </QuizBtn>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <DoneState />
+            )}
           </div>
         )}
       </div>

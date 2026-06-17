@@ -5,9 +5,28 @@ const ChatMessage = ({
   originalLang = "en-US",
   translatedLang = "en-US"
 }) => {
+  const getVoiceForLang = (langCode) => {
+    const voices = speechSynthesis.getVoices();
+
+    return (
+      voices.find((v) => v.lang === langCode) ||
+      voices.find((v) => v.lang.startsWith(langCode.split("-")[0])) ||
+      voices[0]
+    );
+  };
+
   const speak = (text, language) => {
     const utterance = new SpeechSynthesisUtterance(text);
+
+    const voice = getVoiceForLang(language);
+    if (voice) {
+      utterance.voice = voice;
+    }
+
     utterance.lang = language;
+    utterance.rate = 1;
+    utterance.pitch = 1;
+
     speechSynthesis.cancel();
     speechSynthesis.speak(utterance);
   };

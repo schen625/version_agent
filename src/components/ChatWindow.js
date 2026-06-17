@@ -71,12 +71,16 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
 
   const getLangCode = (lang) => {
     const map = {
-      en: "en-US",
-      es: "es-ES",
-      zh: "cmn-Hans-CN",
-    };
-
-    return map[lang] || "en-US";
+        english: "en-US",
+        en: "en-US",
+        spanish: "es-ES",
+        es: "es-ES",
+        french: "fr-FR",
+        fr: "fr-FR",
+        german: "de-DE",
+        de: "de-DE",
+      };
+    return map[lang?.toLowerCase()] || "en-US";
   };
 
   const startSession = async () => {
