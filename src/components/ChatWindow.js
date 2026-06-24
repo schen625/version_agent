@@ -18,6 +18,7 @@ const ChatWindow = ({
   setSessionId,
   sessionActive,
   setSessionActive,
+  onSessionEnded,
 }) => {
   const [recording, setRecording] = useState(false);
   const [translateFrom, setTranslateFrom] = useState("en");
@@ -204,11 +205,16 @@ const ChatWindow = ({
     cancelNudgeTimer();
     nudgeCountRef.current = 0;
     sessionActiveRef.current = false;
+    let endedSession = null;
     try {
-      await fetch("http://localhost:3001/api/session/end", {
+      const res = await fetch("http://localhost:3001/api/session/end", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId }),
       });
+      // The backend returns the finished session (title, summary, vocab,
+      // sentences). We hand it up so Learn mode can jump straight into the
+      // automated study → activities → review flow for this session.
+      endedSession = await res.json();
     } catch (err) {
       console.error("End session failed:", err);
     } finally {
@@ -217,6 +223,9 @@ const ChatWindow = ({
       setSessionActive(false); setSessionId(null);
       setChatHistory([]);
       refreshSessions();
+      if (endedSession && endedSession._id) {
+        onSessionEnded?.(endedSession);
+      }
     }
   };
   

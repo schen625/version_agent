@@ -19,6 +19,11 @@ mongoose.connect(process.env.MONGO_URI)
 const sessionSchema = new mongoose.Schema({
   userId: String,
   mode: String,
+  // The target language being practiced (translateTo, e.g. "zh"). Persisted so
+  // Review can scope to same-language sessions and old words from a different
+  // language don't leak in. Sessions created before this field rely on a
+  // script-detection fallback in the frontend (see learnReview.sessionLangKey).
+  language: String,
   title: String,
   summary: String,
   vocab: [
@@ -74,26 +79,25 @@ async function generateSessionSummary(messages) {
     .map(m => `${m.role}: ${m.original}`)
     .join("\n");
 
-  const prompt = `return just JSON with this information:
+  const prompt = `Return ONLY JSON (no markdown, no commentary) in exactly this shape:
 {
   "title": "short summary title (2-4 words)",
   "summary": "1 sentence summary",
   "vocab": [
-    { "word": "word", "translation": "meaning" }
+    { "word": "word in the language being practiced", "translation": "meaning in the user's other language" }
   ],
   "sentences": [
-    {
-      "sentence": "sentence from conversation",
-      "translation": "translation of sentence"
-    }
+    { "sentence": "example sentence that contains the matching vocab word", "translation": "translation of the sentence" }
   ]
 }
 
 Criteria:
-- I want 5 vocab words
-- I want 5 sentences
-- sentences MUST come from conversation
-- each sentence MUST have translation
+- Provide EXACTLY 4 vocab words that appeared in the conversation (the most useful / teachable ones).
+- Provide EXACTLY 4 sentences. The "sentences" array MUST be aligned one-to-one with "vocab" by position: sentences[i] is the example for vocab[i].
+- CRITICAL: sentences[i] MUST contain the exact text of vocab[i].word verbatim, so it can be turned into a fill-in-the-blank where vocab[i].word is the missing answer.
+- Each sentence should be a short, natural, beginner-friendly variation INSPIRED BY the conversation (it does NOT need to be copied word-for-word), written in the SAME language as vocab[i].word.
+- Every sentence MUST include its translation in the user's other language.
+- Do NOT include any vocab word that you cannot place verbatim into its matching sentence.
 
 Conversation:
 ${convoText}
@@ -119,6 +123,37 @@ ${convoText}
       sentences: []
     };
   }
+}
+
+function normalizeSessionSummary(summary) {
+  const rawVocab = Array.isArray(summary?.vocab) ? summary.vocab : [];
+  const rawSentences = Array.isArray(summary?.sentences) ? summary.sentences : [];
+  const seen = new Set();
+  const vocab = [];
+  const sentences = [];
+
+  rawVocab.forEach((v, i) => {
+    const word = typeof v?.word === "string" ? v.word.trim() : "";
+    if (!word || seen.has(word)) return;
+    seen.add(word);
+
+    const sentence = rawSentences[i] || {};
+    vocab.push({
+      word,
+      translation: typeof v?.translation === "string" ? v.translation.trim() : "",
+    });
+    sentences.push({
+      sentence: typeof sentence.sentence === "string" ? sentence.sentence.trim() : "",
+      translation: typeof sentence.translation === "string" ? sentence.translation.trim() : "",
+    });
+  });
+
+  return {
+    title: typeof summary?.title === "string" ? summary.title : "Conversation Practice",
+    summary: typeof summary?.summary === "string" ? summary.summary : "No summary available",
+    vocab,
+    sentences,
+  };
 }
 
 async function generateAgentOpening(translateFrom, translateTo) {
@@ -302,6 +337,7 @@ app.post("/api/session/start", async (req, res) => {
     const session = await Session.create({
       userId,
       mode,
+      language: translateTo,
       messages: []
     });
 
@@ -339,14 +375,11 @@ app.post("/api/session/end", async (req, res) => {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    const summary = await generateSessionSummary(session.messages);
+    const summary = normalizeSessionSummary(await generateSessionSummary(session.messages));
     session.title = summary.title;
     session.summary = summary.summary;
     session.vocab = summary.vocab;
-    session.sentences = summary.sentences.map(s => ({
-      sentence: s.sentence,
-      translation: s.translation
-    }));
+    session.sentences = summary.sentences;
     session.endedAt = new Date();
 
     await session.save();

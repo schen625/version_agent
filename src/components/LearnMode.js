@@ -1,101 +1,16 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import ChatWindow from "./ChatWindow";
+import {
+  computeReviewWords,
+  findSentenceForWord,
+} from "../utils/learnReview";
 
 const shuffle = (arr) => [...arr].sort(() => Math.random() - 0.5);
 
-// Frequency = how many of the user's sessions a word appears in. "Least-seen"
-// words (lowest frequency) are surfaced for review.
-const computeFrequency = (sessions) => {
-  const freq = {};
-  sessions.forEach((s) =>
-    (s.vocab || []).forEach((v) => {
-      freq[v.word] = (freq[v.word] || 0) + 1;
-    })
-  );
-  return freq;
-};
+// Study phase length: users review the new vocab + sentences for 4 minutes
+// before the system automatically moves them to the learning activities.
+const STUDY_SECONDS = 4 * 60;
 
-// Error rate = errors / attempts for a word (0 if never practiced).
-const errorRateOf = (word, stats) => {
-  const st = stats[word];
-  if (!st || !st.attempts) return 0;
-  return st.errors / st.attempts;
-};
-
-// Find a sentence that contains the word so Fill-in-the-Blank has a cloze to
-// show. Prefer the word's own session, then fall back to any session.
-const findSentenceForWord = (word, session, allSessions) => {
-  const search = (sess) =>
-    (sess?.sentences || []).find((s) => s.sentence && s.sentence.includes(word));
-  let hit = search(session);
-  if (!hit) {
-    for (const s of allSessions) {
-      hit = search(s);
-      if (hit) break;
-    }
-  }
-  return hit
-    ? { sentence: hit.sentence, translation: hit.translation }
-    : { sentence: null, translation: null };
-};
-
-// For one session, pick 4 review words: 2 highest error rate + 2 lowest freq.
-const computeSessionReviewWords = (session, allSessions, stats, freq) => {
-  const vocab = session?.vocab || [];
-  if (!vocab.length) return [];
-
-  const byError = [...vocab].sort(
-    (a, b) => errorRateOf(b.word, stats) - errorRateOf(a.word, stats)
-  );
-  const errorPicks = byError.slice(0, 2);
-  const picked = new Set(errorPicks.map((v) => v.word));
-
-  const byFreq = vocab
-    .filter((v) => !picked.has(v.word))
-    .sort((a, b) => (freq[a.word] || 0) - (freq[b.word] || 0));
-  const freqPicks = byFreq.slice(0, 2);
-
-  return [...errorPicks, ...freqPicks].map((v) => {
-    const s = findSentenceForWord(v.word, session, allSessions);
-    return {
-      word: v.word,
-      translation: v.translation,
-      sentence: s.sentence,
-      sentenceTranslation: s.translation,
-    };
-  });
-};
-
-// Build the accumulating review pool for the selected session:
-// this session's 4 words + every earlier session's 4 words (deduped by word).
-const computeReviewPool = (selectedSession, sessions, stats) => {
-  if (!selectedSession) return [];
-  const freq = computeFrequency(sessions);
-  const selDate = new Date(selectedSession.createdAt).getTime();
-
-  const prior = sessions
-    .filter(
-      (s) =>
-        s._id !== selectedSession._id &&
-        new Date(s.createdAt).getTime() < selDate
-    )
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-  const current = computeSessionReviewWords(selectedSession, sessions, stats, freq);
-  const priorWords = prior.flatMap((s) =>
-    computeSessionReviewWords(s, sessions, stats, freq)
-  );
-
-  const seen = new Set();
-  const deduped = [];
-  for (const w of [...current, ...priorWords]) {
-    if (!seen.has(w.word)) {
-      seen.add(w.word);
-      deduped.push(w);
-    }
-  }
-  return deduped;
-};
 const C = {
   bg: "linear-gradient(145deg, #fdf6f0 0%, #f3eeff 50%, #e8f8f5 100%)",
   card: "rgba(255,255,255,0.75)",
@@ -161,14 +76,28 @@ const RestartBtn = ({ onClick }) => (
   </button>
 );
 
-const DoneState = () => (
+const DoneState = ({ onRepeat }) => (
   <div style={{
-    display: "flex", alignItems: "center", gap: 10,
+    display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
     background: "rgba(181,234,215,0.35)", border: "2px solid rgba(127,201,169,0.4)",
     borderRadius: 16, padding: "16px 22px", color: "#3a9e75",
     fontWeight: 800, fontSize: "0.92rem",
   }}>
     🎉 All done — you're amazing!
+    {onRepeat && (
+      <button onClick={onRepeat} style={{
+        marginLeft: "auto", padding: "7px 16px", fontSize: "0.8rem",
+        fontFamily: "'Nunito', sans-serif", fontWeight: 800, cursor: "pointer",
+        color: "#3a9e75", background: "rgba(255,255,255,0.8)",
+        border: "2px solid rgba(127,201,169,0.45)", borderRadius: 12,
+        transition: "background 0.15s",
+      }}
+        onMouseEnter={e => e.currentTarget.style.background = "white"}
+        onMouseLeave={e => e.currentTarget.style.background = "rgba(255,255,255,0.8)"}
+      >
+        🔁 Practice again
+      </button>
+    )}
   </div>
 );
 
@@ -188,43 +117,106 @@ const SectionDivider = ({ emoji, title }) => (
   </div>
 );
 
-// Review activities run the same Matching + Fill-in-the-Blank exercises as
-// Learn, but over the accumulating review pool instead of one session's vocab.
-const ReviewActivities = ({ words, recordAttempt }) => {
-  // Matching
-  const [matchSelected, setMatchSelected] = useState(null);
-  const [matchState, setMatchState] = useState({});
-  const [matchDone, setMatchDone] = useState(false);
-  const [leftWords, setLeftWords] = useState([]);
-  const [rightWords, setRightWords] = useState([]);
+// A compact "Study → Learn → Review" progress indicator shown at the top of the
+// main panel so the user always knows where they are in the automated flow.
+const PhaseStepper = ({ phase }) => {
+  const steps = [
+    { key: "study", label: "Study", emoji: "📖" },
+    { key: "learn", label: "Learn", emoji: "🎯" },
+    { key: "review", label: "Review", emoji: "🔁" },
+  ];
+  const activeIdx = phase === "done" ? steps.length : steps.findIndex((s) => s.key === phase);
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+      {steps.map((s, i) => {
+        const done = i < activeIdx;
+        const active = i === activeIdx;
+        return (
+          <div key={s.key} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{
+              display: "flex", alignItems: "center", gap: 7,
+              padding: "6px 14px", borderRadius: 20,
+              background: active
+                ? "linear-gradient(135deg, #c9b3f5, #a8d8ea)"
+                : done ? "rgba(181,234,215,0.5)" : "rgba(255,255,255,0.6)",
+              border: `2px solid ${active ? "rgba(201,179,245,0.6)"
+                : done ? "rgba(127,201,169,0.45)" : C.border}`,
+              color: active ? "white" : done ? "#3a9e75" : C.textMuted,
+              fontWeight: 800, fontSize: "0.78rem",
+              boxShadow: active ? "0 4px 14px rgba(201,179,245,0.35)" : "none",
+              transition: "all 0.2s",
+            }}>
+              <span>{done ? "✓" : s.emoji}</span>
+              <span>{s.label}</span>
+            </div>
+            {i < steps.length - 1 && (
+              <div style={{ width: 18, height: 2, background: C.border, borderRadius: 1 }} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+// Review activities re-test previously-learned words with the same Vocab Quiz
+// (MCQ) + Fill-in-the-Blank exercises used in Learn — 4 old words for the quiz
+// and 4 for the fill. Like Learn, attempts are unlimited and a question is
+// re-queued (the whole pass restarts) until the user clears it in one shot.
+const ReviewActivities = ({ words, recordAttempt, onComplete }) => {
+  // MCQ (Vocab Quiz)
+  const [mcqOrder, setMcqOrder] = useState([]);
+  const [mcqIndex, setMcqIndex] = useState(0);
+  const [mcqAnswered, setMcqAnswered] = useState({});
+  const [mcqDone, setMcqDone] = useState(false);
+  const [mcqWrong, setMcqWrong] = useState([]);
 
   // Fill
+  const [fillOrder, setFillOrder] = useState([]);
   const [fillIndex, setFillIndex] = useState(0);
   const [fillAnswered, setFillAnswered] = useState({});
   const [fillDone, setFillDone] = useState(false);
-  const [fillMistakes, setFillMistakes] = useState(0);
-  const [fillOrder, setFillOrder] = useState([]);
+  const [fillWrong, setFillWrong] = useState([]);
 
-  const reset = () => {
-    setMatchSelected(null);
-    setMatchState({});
-    setMatchDone(false);
-    setLeftWords(shuffle(words));
-    setRightWords(shuffle(words));
+  const resetMcq = () => {
+    setMcqOrder(shuffle(words.map((_, i) => i)));
+    setMcqIndex(0);
+    setMcqAnswered({});
+    setMcqDone(false);
+    setMcqWrong([]);
+  };
+  const resetFill = () => {
+    setFillOrder(shuffle(words.map((_, i) => i)));
     setFillIndex(0);
     setFillAnswered({});
     setFillDone(false);
-    setFillMistakes(0);
-    setFillOrder(shuffle(words.map((_, i) => i)));
+    setFillWrong([]);
   };
+  const reset = () => { resetMcq(); resetFill(); };
 
-  // Re-initialise whenever the review pool changes.
+  // Re-initialise whenever the review words change.
   useEffect(() => {
     reset();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [words]);
 
+  // The parent is notified via the explicit "Finish" button below (rather than
+  // auto-firing when both activities are first cleared) so the user can choose
+  // to practice either review activity again before completing.
+
+  useEffect(() => { setMcqAnswered({}); }, [mcqIndex]);
   useEffect(() => { setFillAnswered({}); }, [fillIndex]);
+
+  const currentMcq = words[mcqOrder[mcqIndex]];
+  const mcqOptions = useMemo(() => {
+    if (!words.length || !currentMcq) return [];
+    const correct = currentMcq.translation;
+    const wrong = shuffle(
+      words.filter((v) => v.translation !== correct).map((v) => v.translation)
+    ).slice(0, 4);
+    return shuffle([correct, ...wrong]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mcqIndex, mcqOrder, words]);
 
   const currentFill = words[fillOrder[fillIndex]];
   const fillOptions = useMemo(() => {
@@ -235,53 +227,53 @@ const ReviewActivities = ({ words, recordAttempt }) => {
     ).slice(0, 4);
     return shuffle([correct, ...wrong]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fillIndex, words]);
+  }, [fillIndex, fillOrder, words]);
 
   if (!words.length) {
     return (
       <p style={{ color: C.textMuted, fontWeight: 700, fontSize: "0.85rem" }}>
-        No review words yet — practice a session first! 🌱
+        No previous words to review yet — this looks like your first session.
+        Come back after your next chat to review these words! 🌱
       </p>
     );
   }
 
-  const handleMatch = (word, side) => {
-    if (matchState[word] === "correct") return;
-    if (!matchSelected) { setMatchSelected({ word, side }); return; }
-    const first = matchSelected, second = { word, side };
-    if (first.side === second.side) { setMatchSelected(null); return; }
-    const left = first.side === "left" ? first : second;
-    const right = first.side === "right" ? first : second;
-    const correct = words.find((v) => v.word === left.word)?.translation;
-    const isCorrect = correct === right.word;
-    recordAttempt(left.word, correct, isCorrect);
-    setMatchState((p) => ({
-      ...p,
-      [left.word]: isCorrect ? "correct" : "wrong",
-      [right.word]: isCorrect ? "correct" : "wrong",
-    }));
-    setMatchSelected(null);
-    if (isCorrect) {
-      const total = Object.values({ ...matchState, [left.word]: "correct", [right.word]: "correct" })
-        .filter((v) => v === "correct").length;
-      if (total / 2 === words.length) setMatchDone(true);
-    } else {
-      setTimeout(() => setMatchState((p) => {
-        const c = { ...p }; delete c[left.word]; delete c[right.word]; return c;
-      }), 600);
+  const answerMcq = (opt) => {
+    const idx = mcqOrder[mcqIndex];
+    const correct = currentMcq?.translation;
+    const isCorrect = opt === correct;
+    recordAttempt(currentMcq?.word, currentMcq?.translation, isCorrect);
+    setMcqAnswered((p) => ({ ...p, [opt]: isCorrect ? "correct" : "wrong" }));
+    if (!isCorrect) {
+      setMcqWrong((w) => (w.includes(idx) ? w : [...w, idx]));
+      return;
     }
+    setTimeout(() => {
+      if (mcqIndex + 1 >= mcqOrder.length) {
+        // Re-test ONLY the words missed this round, not the whole set.
+        if (mcqWrong.length === 0) setMcqDone(true);
+        else { setMcqOrder(shuffle(mcqWrong)); setMcqIndex(0); setMcqWrong([]); setMcqAnswered({}); }
+      } else {
+        setMcqIndex((i) => i + 1);
+      }
+    }, 400);
   };
 
   const answerFill = (opt) => {
+    const idx = fillOrder[fillIndex];
     const correct = currentFill?.word;
     const isCorrect = opt === correct;
     recordAttempt(currentFill?.word, currentFill?.translation, isCorrect);
     setFillAnswered((p) => ({ ...p, [opt]: isCorrect ? "correct" : "wrong" }));
-    if (!isCorrect) { setFillMistakes((m) => m + 1); return; }
+    if (!isCorrect) {
+      setFillWrong((w) => (w.includes(idx) ? w : [...w, idx]));
+      return;
+    }
     setTimeout(() => {
-      if (fillIndex + 1 >= words.length) {
-        if (fillMistakes === 0) setFillDone(true);
-        else { setFillIndex(0); setFillMistakes(0); setFillAnswered({}); }
+      if (fillIndex + 1 >= fillOrder.length) {
+        // Re-test ONLY the words missed this round, not the whole set.
+        if (fillWrong.length === 0) setFillDone(true);
+        else { setFillOrder(shuffle(fillWrong)); setFillIndex(0); setFillWrong([]); setFillAnswered({}); }
       } else {
         setFillIndex((i) => i + 1);
       }
@@ -294,69 +286,36 @@ const ReviewActivities = ({ words, recordAttempt }) => {
 
   return (
     <>
-      {/* Matching */}
-      <SectionDivider emoji="🔗" title="Review · Matching" />
+      {/* Vocab Quiz */}
+      <SectionDivider emoji="🎯" title="Review · Vocab Quiz" />
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-        <RestartBtn onClick={reset} />
+        <RestartBtn onClick={resetMcq} />
+        <span style={{ fontSize: "0.78rem", color: C.textMuted, fontWeight: 700 }}>
+          {mcqDone ? "Complete!" : `${mcqIndex + 1} / ${mcqOrder.length}`}
+        </span>
       </div>
-      {!matchDone ? (
-        <div style={{ display: "flex", gap: 20 }}>
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
-            {leftWords.map((v) => {
-              const st = matchState[v.word];
-              const sel = matchSelected?.word === v.word;
-              return (
-                <div key={v.word} onClick={() => handleMatch(v.word, "left")} style={{
-                  padding: "11px 18px", borderRadius: 14, cursor: "pointer",
-                  pointerEvents: matchState[v.word] === "correct" ? "none" : "auto",
-                  fontWeight: 800, fontSize: "0.9rem",
-                  background: st === "correct" ? "rgba(181,234,215,0.5)"
-                    : st === "wrong" ? "rgba(255,183,197,0.5)"
-                      : sel ? "rgba(201,179,245,0.3)" : "rgba(255,255,255,0.75)",
-                  border: `2px solid ${st === "correct" ? "rgba(127,201,169,0.5)"
-                    : st === "wrong" ? "rgba(255,143,163,0.5)"
-                      : sel ? "rgba(201,179,245,0.6)" : C.border}`,
-                  color: st === "correct" ? "#3a9e75" : st === "wrong" ? "#cc4466" : C.textMain,
-                  boxShadow: sel ? "0 4px 14px rgba(201,179,245,0.3)" : "0 2px 8px rgba(180,160,220,0.1)",
-                  transition: "all 0.15s",
-                }}>
-                  {v.word}
-                </div>
-              );
-            })}
-          </div>
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
-            {rightWords.map((v) => {
-              const st = matchState[v.translation];
-              const sel = matchSelected?.word === v.translation;
-              return (
-                <div key={v.translation} onClick={() => handleMatch(v.translation, "right")} style={{
-                  padding: "11px 18px", borderRadius: 14, cursor: "pointer",
-                  pointerEvents: matchState[v.translation] === "correct" ? "none" : "auto",
-                  fontWeight: 700, fontSize: "0.88rem",
-                  background: st === "correct" ? "rgba(181,234,215,0.5)"
-                    : st === "wrong" ? "rgba(255,183,197,0.5)"
-                      : sel ? "rgba(168,216,234,0.35)" : "rgba(255,255,255,0.75)",
-                  border: `2px solid ${st === "correct" ? "rgba(127,201,169,0.5)"
-                    : st === "wrong" ? "rgba(255,143,163,0.5)"
-                      : sel ? "rgba(168,216,234,0.7)" : C.border}`,
-                  color: st === "correct" ? "#3a9e75" : st === "wrong" ? "#cc4466" : C.textSub,
-                  transition: "all 0.15s",
-                }}>
-                  {v.translation}
-                </div>
-              );
-            })}
+      {!mcqDone ? (
+        <div style={{ ...glassCard, padding: "22px 26px" }}>
+          <p style={{ margin: "0 0 16px", fontSize: "1.15rem", fontWeight: 900, color: C.textMain }}>
+            {currentMcq?.word}
+          </p>
+          <p style={{ margin: "0 0 14px", fontSize: "0.82rem", color: C.textMuted, fontWeight: 700 }}>
+            Pick the correct translation 👇
+          </p>
+          <div style={{ display: "flex", flexWrap: "wrap" }}>
+            {mcqOptions.map((o) => (
+              <QuizBtn key={o} state={mcqAnswered[o]} onClick={() => answerMcq(o)}>{o}</QuizBtn>
+            ))}
           </div>
         </div>
-      ) : <DoneState />}
+      ) : <DoneState onRepeat={resetMcq} />}
 
       {/* Fill in the Blank */}
       <SectionDivider emoji="✍️" title="Review · Fill in the Blank" />
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-        <RestartBtn onClick={reset} />
+        <RestartBtn onClick={resetFill} />
         <span style={{ fontSize: "0.78rem", color: C.textMuted, fontWeight: 700 }}>
-          {fillDone ? "Complete!" : `${fillIndex + 1} / ${words.length}`}
+          {fillDone ? "Complete!" : `${fillIndex + 1} / ${fillOrder.length}`}
         </span>
       </div>
       {!fillDone ? (
@@ -373,7 +332,26 @@ const ReviewActivities = ({ words, recordAttempt }) => {
             ))}
           </div>
         </div>
-      ) : <DoneState />}
+      ) : <DoneState onRepeat={resetFill} />}
+
+      {mcqDone && fillDone && (
+        <div style={{
+          ...glassCard, marginBottom: 40, padding: "22px 26px",
+          display: "flex", flexDirection: "column", gap: 14,
+        }}>
+          <p style={{ margin: 0, fontWeight: 800, color: C.textMain, fontSize: "0.95rem" }}>
+            🎉 Review complete! Feel free to practice either activity again above, or finish.
+          </p>
+          <button onClick={() => onComplete?.()} style={{
+            alignSelf: "flex-start", padding: "12px 26px", fontSize: "0.92rem",
+            fontWeight: 900, fontFamily: "'Nunito', sans-serif", color: "white",
+            background: "linear-gradient(135deg, #c9b3f5, #a8d8ea)", border: "none",
+            borderRadius: 16, cursor: "pointer", boxShadow: "0 6px 18px rgba(201,179,245,0.45)",
+          }}>
+            Finish →
+          </button>
+        </div>
+      )}
     </>
   );
 };
@@ -389,12 +367,20 @@ const LearnMode = ({ mode, onBack }) => {
   // ChatWindow unmounting on tab switches, keeping the chat UI and the
   // Start/End button in sync with chatHistory.
   const [chatSessionId, setChatSessionId] = useState(null);
-  const [mcqMistakes, setMcqMistakes] = useState(0);
-  const [fillMistakes, setFillMistakes] = useState(0);
+  const [mcqWrong, setMcqWrong] = useState([]);
+  const [fillWrong, setFillWrong] = useState([]);
   const [mcqOrder, setMcqOrder] = useState([]);
   const [fillOrder, setFillOrder] = useState([]);
   const [matchOrder, setMatchOrder] = useState([]);
-  const [activitiesStarted, setActivitiesStarted] = useState(false);
+
+  // The Learn section runs as an automated sequence per session:
+  //   "study"  → review the 4 new vocab + sentences for 4 minutes (timed)
+  //   "learn"  → Vocab Quiz + Matching + Fill on the new words (no timer)
+  //   "review" → Vocab Quiz + Fill on 4 previously-learned words (no timer)
+  // Each phase advances to the next automatically.
+  const [phase, setPhase] = useState("study");
+  const [studySecondsLeft, setStudySecondsLeft] = useState(STUDY_SECONDS);
+  const mainScrollRef = useRef(null);
 
   const [wordStats, setWordStats] = useState({});
   const [reviewWords, setReviewWords] = useState([]);
@@ -408,6 +394,14 @@ const LearnMode = ({ mode, onBack }) => {
   }, [userId]);
 
   useEffect(() => { fetchSessions(); }, [fetchSessions]);
+
+  // When a chat session ends, jump straight into the study phase for it.
+  const handleSessionEnded = useCallback((session) => {
+    fetchSessions();
+    setSelectedSession(session);
+    setTab("learn");
+    // Phase + timer reset is handled by the selectedSession effect below.
+  }, [fetchSessions]);
 
   // Hydrate per-word error stats from the backend.
   useEffect(() => {
@@ -447,7 +441,14 @@ const LearnMode = ({ mode, onBack }) => {
     }
   }, [userId]);
 
-  const vocab = useMemo(() => selectedSession?.vocab || [], [selectedSession]);
+  const vocab = useMemo(() => {
+    const seen = new Set();
+    return (selectedSession?.vocab || []).filter((v) => {
+      if (!v?.word || seen.has(v.word)) return false;
+      seen.add(v.word);
+      return true;
+    });
+  }, [selectedSession]);
   const sentences = useMemo(() => selectedSession?.sentences || [], [selectedSession]);
 
   const resetAll = useCallback(() => {
@@ -457,26 +458,73 @@ const LearnMode = ({ mode, onBack }) => {
     setFillOrder(shuffle(indices));
     setMatchOrder(shuffle(indices));
 
-    setMcqIndex(0); setMcqAnswered({}); setMcqDone(false); setMcqMistakes(0);
+    setMcqIndex(0); setMcqAnswered({}); setMcqDone(false); setMcqWrong([]);
     setMatchState({}); setMatchSelected(null); setMatchDone(false);
-    setFillIndex(0); setFillAnswered({}); setFillDone(false); setFillMistakes(0);
+    setFillIndex(0); setFillAnswered({}); setFillDone(false); setFillWrong([]);
   }, [vocab]);
 
-  useEffect(() => {
-    if (selectedSession) {
-      resetAll();
-      setActivitiesStarted(false);
-    }
-  }, [selectedSession, resetAll]);
+  // Per-activity resets so a user can voluntarily "practice again" one activity
+  // (Vocab Quiz, Matching, or Fill) without wiping the other two. Re-answering
+  // still records attempts, so any extra practice is logged like normal play.
+  const resetMCQ = useCallback(() => {
+    setMcqOrder(shuffle(vocab.map((_, i) => i)));
+    setMcqIndex(0); setMcqAnswered({}); setMcqDone(false); setMcqWrong([]);
+  }, [vocab]);
+  const resetMatching = useCallback(() => {
+    setMatchOrder(shuffle(vocab.map((_, i) => i)));
+    setMatchState({}); setMatchSelected(null); setMatchDone(false);
+  }, [vocab]);
+  const resetFill = useCallback(() => {
+    setFillOrder(shuffle(vocab.map((_, i) => i)));
+    setFillIndex(0); setFillAnswered({}); setFillDone(false); setFillWrong([]);
+  }, [vocab]);
 
-  // Snapshot the review pool when the user enters the activity phase so it
-  // stays stable while they practice (rather than reshuffling on every answer).
+  // Restart the automated flow at the timed study phase. Used both when a new
+  // session is selected and by the "back to study" control.
+  const goToStudy = useCallback(() => {
+    resetAll();
+    setStudySecondsLeft(STUDY_SECONDS);
+    setPhase("study");
+  }, [resetAll]);
+
+  // Re-enter the learn activities from review. Reset first so the activity-done
+  // flags clear — otherwise the auto-advance effect would bounce straight back
+  // to review.
+  const goToLearn = useCallback(() => {
+    resetAll();
+    setPhase("learn");
+  }, [resetAll]);
+
   useEffect(() => {
-    if (activitiesStarted) {
-      setReviewWords(computeReviewPool(selectedSession, sessions, wordStats));
+    if (selectedSession) goToStudy();
+  }, [selectedSession, goToStudy]);
+
+  // Study-phase countdown: tick once a second and, when it hits zero,
+  // automatically move the user into the learning activities.
+  useEffect(() => {
+    if (phase !== "study" || !selectedSession) return;
+    if (studySecondsLeft <= 0) { setPhase("learn"); return; }
+    const t = setTimeout(() => setStudySecondsLeft((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [phase, studySecondsLeft, selectedSession]);
+
+  // Snapshot the 4 review words when the user enters the review phase so the
+  // set stays stable while they practice (rather than reshuffling each answer).
+  useEffect(() => {
+    if (phase === "review") {
+      const rw = computeReviewWords(selectedSession, sessions, wordStats);
+      setReviewWords(rw);
+      // First session has no prior words to review, so go straight to "done".
+      if (rw.length === 0) setPhase("done");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activitiesStarted, selectedSession]);
+  }, [phase, selectedSession]);
+
+  // Scroll the main panel back to the top on each phase transition so a new
+  // phase always starts in view.
+  useEffect(() => {
+    mainScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+  }, [phase]);
 
   // MCQ
   const [mcqIndex, setMcqIndex] = useState(0);
@@ -513,17 +561,19 @@ const LearnMode = ({ mode, onBack }) => {
     }));
 
     if (!isCorrect) {
-      setMcqMistakes(m => m + 1);
+      setMcqWrong(w => w.includes(currentMCQIndex) ? w : [...w, currentMCQIndex]);
       return;
     }
 
     setTimeout(() => {
-      if (mcqIndex + 1 >= vocab.length) {
-        if (mcqMistakes === 0) {
+      if (mcqIndex + 1 >= mcqOrder.length) {
+        // Repeat ONLY the words missed this round, not the whole set.
+        if (mcqWrong.length === 0) {
           setMcqDone(true); 
         } else {
+          setMcqOrder(shuffle(mcqWrong));
           setMcqIndex(0);
-          setMcqMistakes(0);
+          setMcqWrong([]);
           setMcqAnswered({});
         }
       } else {
@@ -594,6 +644,21 @@ const LearnMode = ({ mode, onBack }) => {
     return shuffle([correct, ...wrong]);
   }, [fillIndex, vocab, fillOrder]);
 
+  // Build the cloze from a sentence that actually CONTAINS the target word.
+  // The backend now aligns each word with such a sentence, but we still resolve
+  // it here (rather than trusting sentences[i]) so older / misaligned sessions
+  // also work. If no sentence contains the word, fall back to a bare blank with
+  // the translation as the clue so the question stays answerable.
+  const currentFillVocab = vocab[currentFillIndex];
+  const currentFillSentence = currentFillVocab
+    ? findSentenceForWord(currentFillVocab.word, selectedSession, sessions)
+    : { sentence: null, translation: null };
+  const currentFillCloze = currentFillSentence.sentence
+    ? currentFillSentence.sentence.replace(currentFillVocab.word, "______")
+    : "______";
+  const currentFillClue = currentFillSentence.translation
+    || (currentFillVocab ? `(${currentFillVocab.translation})` : "");
+
   const answerFill = (opt) => {
     const currentFillIndex = fillOrder[fillIndex];
     const correct = vocab[currentFillIndex]?.word;
@@ -607,17 +672,19 @@ const LearnMode = ({ mode, onBack }) => {
     }));
 
     if (!isCorrect) {
-      setFillMistakes(m => m + 1);
+      setFillWrong(w => w.includes(currentFillIndex) ? w : [...w, currentFillIndex]);
       return;
     }
 
     setTimeout(() => {
-      if (fillIndex + 1 >= vocab.length) {
-        if (fillMistakes === 0) {
+      if (fillIndex + 1 >= fillOrder.length) {
+        // Repeat ONLY the words missed this round, not the whole set.
+        if (fillWrong.length === 0) {
           setFillDone(true);
         } else {
+          setFillOrder(shuffle(fillWrong));
           setFillIndex(0);
-          setFillMistakes(0);
+          setFillWrong([]);
           setFillAnswered({});
         }
       } else {
@@ -626,9 +693,21 @@ const LearnMode = ({ mode, onBack }) => {
     }, 400);
   };
 
+  // We DON'T auto-advance when all activities are cleared anymore: a completion
+  // panel (below) offers a "Continue to Review" button so the user can choose to
+  // practice any activity again first. The only automatic jump is for a session
+  // with no vocab (e.g. summary generation failed), which has nothing to drill.
+  useEffect(() => {
+    if (phase !== "learn") return;
+    if (vocab.length === 0) setPhase("review");
+  }, [phase, vocab.length]);
+
   const sortedSessions = [...sessions].sort(
     (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
   );
+
+  const studyMinutes = Math.floor(studySecondsLeft / 60);
+  const studySecs = String(studySecondsLeft % 60).padStart(2, "0");
 
   return (
     <div style={{
@@ -713,6 +792,7 @@ const LearnMode = ({ mode, onBack }) => {
             sessionActive={sessionActive}
             setSessionActive={setSessionActive}
             refreshSessions={fetchSessions}
+            onSessionEnded={handleSessionEnded}
           />
         )}
 
@@ -839,7 +919,7 @@ const LearnMode = ({ mode, onBack }) => {
             )}
 
             {/* Main */}
-            <div style={{ flex: 1, padding: "24px 32px", overflowY: "auto" }}>
+            <div ref={mainScrollRef} style={{ flex: 1, padding: "24px 32px", overflowY: "auto" }}>
               {!selectedSession ? (
                 <div style={{
                   height: "100%", display: "flex", flexDirection: "column",
@@ -853,9 +933,59 @@ const LearnMode = ({ mode, onBack }) => {
                 </div>
               ) : (
                 <>
-                  {/* ── STUDY PHASE: vocab + sentences ── */}
-                  {!activitiesStarted && (
+                  {/* Phase progress: Study → Learn → Review */}
+                  <PhaseStepper phase={phase} />
+
+                  {/* ── STUDY PHASE: vocab + sentences, on a 4-minute timer ── */}
+                  {phase === "study" && (
                     <>
+                      {/* Countdown card — auto-advances to the activities at 0 */}
+                      <div style={{
+                        ...glassCard, padding: "18px 22px", marginBottom: 6,
+                        display: "flex", alignItems: "center", justifyContent: "space-between",
+                        gap: 16, flexWrap: "wrap",
+                      }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                          <div style={{
+                            minWidth: 84, textAlign: "center",
+                            fontSize: "1.6rem", fontWeight: 900,
+                            color: studySecondsLeft <= 30 ? C.red : C.textMain,
+                            fontVariantNumeric: "tabular-nums",
+                          }}>
+                            {studyMinutes}:{studySecs}
+                          </div>
+                          <div>
+                            <p style={{ margin: 0, fontWeight: 800, color: C.textMain, fontSize: "0.92rem" }}>
+                              Study time
+                            </p>
+                            <p style={{ margin: "2px 0 0", fontWeight: 700, color: C.textMuted, fontSize: "0.78rem" }}>
+                              Review the new words & sentences — activities start automatically.
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => setPhase("learn")}
+                          style={{
+                            padding: "12px 26px", fontSize: "0.92rem", fontWeight: 900,
+                            fontFamily: "'Nunito', sans-serif",
+                            background: "linear-gradient(135deg, #c9b3f5, #a8d8ea)",
+                            color: "white", border: "none", borderRadius: 16, cursor: "pointer",
+                            boxShadow: "0 6px 18px rgba(201,179,245,0.45)",
+                            transition: "transform 0.15s, box-shadow 0.15s",
+                          }}
+                          onMouseEnter={e => {
+                            e.currentTarget.style.transform = "translateY(-2px)";
+                            e.currentTarget.style.boxShadow = "0 10px 26px rgba(201,179,245,0.55)";
+                          }}
+                          onMouseLeave={e => {
+                            e.currentTarget.style.transform = "translateY(0)";
+                            e.currentTarget.style.boxShadow = "0 6px 18px rgba(201,179,245,0.45)";
+                          }}
+                        >
+                          I'm ready →
+                        </button>
+                      </div>
+
                       {/* List Vocab */}
                       {vocab.length > 0 && (
                         <>
@@ -894,60 +1024,17 @@ const LearnMode = ({ mode, onBack }) => {
                         </>
                       )}
 
-                      {/* Start Activities CTA */}
-                      <div style={{
-                        margin: "36px 0 40px",
-                        display: "flex",
-                        flexDirection: "column",
-                        alignItems: "center",
-                        gap: 10,
-                      }}>
-                        <p style={{
-                          margin: 0,
-                          fontSize: "0.82rem",
-                          color: C.textMuted,
-                          fontWeight: 700,
-                        }}>
-                          Studied the vocab? Time to test yourself!
-                        </p>
-                        <button
-                          onClick={() => setActivitiesStarted(true)}
-                          style={{
-                            padding: "14px 36px",
-                            fontSize: "1rem",
-                            fontWeight: 900,
-                            fontFamily: "'Nunito', sans-serif",
-                            background: "linear-gradient(135deg, #c9b3f5, #a8d8ea)",
-                            color: "white",
-                            border: "none",
-                            borderRadius: 18,
-                            cursor: "pointer",
-                            boxShadow: "0 6px 20px rgba(201,179,245,0.45)",
-                            transition: "transform 0.15s, box-shadow 0.15s",
-                            letterSpacing: "0.02em",
-                          }}
-                          onMouseEnter={e => {
-                            e.currentTarget.style.transform = "translateY(-2px)";
-                            e.currentTarget.style.boxShadow = "0 10px 28px rgba(201,179,245,0.55)";
-                          }}
-                          onMouseLeave={e => {
-                            e.currentTarget.style.transform = "translateY(0)";
-                            e.currentTarget.style.boxShadow = "0 6px 20px rgba(201,179,245,0.45)";
-                          }}
-                        >
-                          ✨ Start Activities
-                        </button>
-                      </div>
+                      <div style={{ height: 24 }} />
                     </>
                   )}
 
-                  {/* ── ACTIVITY PHASE: exercises only ── */}
-                  {activitiesStarted && (
+                  {/* ── LEARN PHASE: Vocab Quiz + Matching + Fill (no timer) ── */}
+                  {phase === "learn" && (
                     <>
                       {/* Back to study link */}
                       <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
                         <button
-                          onClick={() => setActivitiesStarted(false)}
+                          onClick={goToStudy}
                           style={{
                             background: "none",
                             border: "none",
@@ -969,9 +1056,9 @@ const LearnMode = ({ mode, onBack }) => {
                       {/* MCQ */}
                       <SectionDivider emoji="🎯" title="Vocab Quiz" />
                       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-                        <RestartBtn onClick={resetAll} />
+                        <RestartBtn onClick={resetMCQ} />
                         <span style={{ fontSize: "0.78rem", color: C.textMuted, fontWeight: 700 }}>
-                          {mcqDone ? "Complete!" : `${mcqIndex + 1} / ${vocab.length}`}
+                          {mcqDone ? "Complete!" : `${mcqIndex + 1} / ${mcqOrder.length}`}
                         </span>
                       </div>
                       {!mcqDone ? (
@@ -988,12 +1075,12 @@ const LearnMode = ({ mode, onBack }) => {
                             ))}
                           </div>
                         </div>
-                      ) : <DoneState />}
+                      ) : <DoneState onRepeat={resetMCQ} />}
 
                       {/* Matching */}
                       <SectionDivider emoji="🔗" title="Matching" />
                       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-                        <RestartBtn onClick={resetAll} />
+                        <RestartBtn onClick={resetMatching} />
                       </div>
                       {!matchDone ? (
                         <div style={{ display: "flex", gap: 20 }}>
@@ -1045,26 +1132,23 @@ const LearnMode = ({ mode, onBack }) => {
                             })}
                           </div>
                         </div>
-                      ) : <DoneState />}
+                      ) : <DoneState onRepeat={resetMatching} />}
 
                       {/* Fill in The Blank */}
                       <SectionDivider emoji="✍️" title="Fill in the Blank" />
                       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-                        <RestartBtn onClick={resetAll} />
+                        <RestartBtn onClick={resetFill} />
                         <span style={{ fontSize: "0.78rem", color: C.textMuted, fontWeight: 700 }}>
-                          {fillDone ? "Complete!" : `${fillIndex + 1} / ${vocab.length}`}
+                          {fillDone ? "Complete!" : `${fillIndex + 1} / ${fillOrder.length}`}
                         </span>
                       </div>
                       {!fillDone ? (
                         <div style={{ ...glassCard, padding: "22px 26px", marginBottom: 40 }}>
                           <p style={{ margin: "0 0 16px", fontSize: "1rem", lineHeight: 1.7, fontWeight: 700, color: C.textSub }}>
-                            {sentences[currentFillIndex]?.sentence?.replace(
-                              vocab[currentFillIndex]?.word,
-                              "______"
-                            )}
-                            <p style={{ fontSize: 12, color: "gray" }}>
-                              {sentences[currentFillIndex]?.translation}
-                            </p>
+                            {currentFillCloze}
+                            <span style={{ display: "block", fontSize: 12, color: "gray", marginTop: 6 }}>
+                              {currentFillClue}
+                            </span>
                           </p>
                           <div style={{ display: "flex", flexWrap: "wrap" }}>
                             {fillOptions.map(o => (
@@ -1072,21 +1156,98 @@ const LearnMode = ({ mode, onBack }) => {
                             ))}
                           </div>
                         </div>
-                      ) : <DoneState />}
+                      ) : <DoneState onRepeat={resetFill} />}
 
-                      {/* ── REVIEW ── 2 highest-error + 2 lowest-frequency words from
-                          this session, accumulated with every earlier session. */}
+                      {/* When every activity is cleared, show a completion gate
+                          with a "Continue to Review" button. We no longer auto-
+                          advance, so users can choose to practice again first. */}
+                      {mcqDone && matchDone && fillDone ? (
+                        <div style={{
+                          ...glassCard, margin: "8px 0 36px", padding: "22px 26px",
+                          display: "flex", flexDirection: "column", gap: 14,
+                        }}>
+                          <p style={{ margin: 0, fontWeight: 800, color: C.textMain, fontSize: "0.95rem" }}>
+                            🎉 Nice work — all activities cleared! Practice any of them again
+                            above if you'd like, or continue to your Review.
+                          </p>
+                          <button
+                            onClick={() => setPhase("review")}
+                            style={{
+                              alignSelf: "flex-start", padding: "12px 26px",
+                              fontSize: "0.92rem", fontWeight: 900, fontFamily: "'Nunito', sans-serif",
+                              color: "white", background: "linear-gradient(135deg, #c9b3f5, #a8d8ea)",
+                              border: "none", borderRadius: 16, cursor: "pointer",
+                              boxShadow: "0 6px 18px rgba(201,179,245,0.45)",
+                            }}
+                          >
+                            Continue to Review →
+                          </button>
+                        </div>
+                      ) : (
+                        <p style={{
+                          margin: "8px 0 30px", fontSize: "0.8rem",
+                          color: C.textMuted, fontWeight: 700, lineHeight: 1.5,
+                        }}>
+                          Missed words come back until you clear them — then you can repeat any activity or move on 🔁
+                        </p>
+                      )}
+                    </>
+                  )}
+
+                  {/* ── REVIEW PHASE: 4 previously-learned words (no timer) ── */}
+                  {phase === "review" && (
+                    <>
+                      {/* Back to activities link (resets so it doesn't bounce back) */}
+                      <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
+                        <button
+                          onClick={goToLearn}
+                          style={{
+                            background: "none", border: "none", color: C.textMuted,
+                            fontSize: "0.78rem", fontWeight: 800,
+                            fontFamily: "'Nunito', sans-serif", cursor: "pointer",
+                            padding: "4px 0", transition: "color 0.15s",
+                          }}
+                          onMouseEnter={e => e.currentTarget.style.color = C.textSub}
+                          onMouseLeave={e => e.currentTarget.style.color = C.textMuted}
+                        >
+                          ← Back to activities
+                        </button>
+                      </div>
+
                       <SectionDivider emoji="🔁" title="Review" />
                       <p style={{
                         margin: "0 0 16px", fontSize: "0.82rem",
                         color: C.textMuted, fontWeight: 700, lineHeight: 1.5,
                       }}>
-                        Your trickiest and least-seen words — 2 highest error rate and 2 lowest
-                        frequency from this session, plus everything carried over from earlier days
-                        {reviewWords.length > 0 && ` (${reviewWords.length} word${reviewWords.length === 1 ? "" : "s"})`}.
+                        {reviewWords.length > 0
+                          ? "Revisiting " + reviewWords.length + " word" + (reviewWords.length === 1 ? "" : "s") + " from earlier sessions — your trickiest (highest error rate) and least-seen (lowest frequency)."
+                          : "Words you've learned in earlier sessions show up here for review."}
                       </p>
-                      <ReviewActivities words={reviewWords} recordAttempt={recordAttempt} />
+                      <ReviewActivities words={reviewWords} recordAttempt={recordAttempt} onComplete={() => setPhase("done")} />
                     </>
+                  )}
+
+                  {/* ── DONE: end-of-day completion screen ── */}
+                  {phase === "done" && (
+                    <div style={{
+                      minHeight: "70vh", display: "flex", flexDirection: "column",
+                      alignItems: "center", justifyContent: "center", textAlign: "center",
+                      gap: 20,
+                    }}>
+                      <div style={{ fontSize: 72 }}>🎉</div>
+                      <div style={{
+                        ...glassCard, padding: "34px 42px", maxWidth: 560,
+                        display: "flex", flexDirection: "column", alignItems: "center", gap: 14,
+                      }}>
+                        <h2 style={{ margin: 0, fontSize: "1.5rem", fontWeight: 900, color: C.textMain }}>
+                          Nice job!
+                        </h2>
+                        <p style={{ margin: 0, fontSize: "1.02rem", lineHeight: 1.7, fontWeight: 700, color: C.textSub }}>
+                          You have completed your learning activity today. Please let the
+                          researcher know and we look forward to your learning tomorrow!
+                        </p>
+                      </div>
+                    </div>
                   )}
                 </>
               )}
