@@ -1,5 +1,10 @@
 const REVIEW_WORD_COUNT = 4;
 
+// A word needs at least this many recorded attempts before its error rate is
+// trusted for "highest error" ranking. Without a floor, a single wrong answer
+// (1/1 = 100%) would outrank a genuinely hard word with a large sample.
+const MIN_ERROR_ATTEMPTS = 2;
+
 // Han / CJK ideographs — used to tell a Chinese session apart from a
 // Latin-script one when a session predates the persisted `language` field.
 const HAN = /[㐀-鿿豈-﫿]/;
@@ -14,21 +19,6 @@ export const sessionLangKey = (session) => {
   if (session?.language) return String(session.language).toLowerCase();
   const sample = (session?.vocab || []).map((v) => v?.word || "").join("");
   return HAN.test(sample) ? "zh" : "latin";
-};
-
-// Frequency = how many of the user's sessions a word appears in. Duplicate
-// entries inside one session count once.
-export const computeFrequency = (sessions) => {
-  const freq = {};
-  sessions.forEach((s) => {
-    const seenInSession = new Set();
-    (s.vocab || []).forEach((v) => {
-      if (!v.word || seenInSession.has(v.word)) return;
-      seenInSession.add(v.word);
-      freq[v.word] = (freq[v.word] || 0) + 1;
-    });
-  });
-  return freq;
 };
 
 export const errorRateOf = (word, stats) => {
@@ -69,7 +59,6 @@ export const computeReviewWords = (selectedSession, sessions, stats) => {
   );
   if (!prior.length) return [];
 
-  const freq = computeFrequency(sessions);
   const seen = new Set();
   const pool = [];
   prior.forEach((s) =>
@@ -87,16 +76,31 @@ export const computeReviewWords = (selectedSession, sessions, stats) => {
   );
   if (!pool.length) return [];
 
-  const byError = [...pool].sort(
-    (a, b) => errorRateOf(b.word, stats) - errorRateOf(a.word, stats)
-  );
+  // Rank by error rate, but only for words with enough attempts to trust the
+  // rate; thin-sample words rank as 0 and fall through to the frequency pass.
+  // Ties are broken by raw error count (more total mistakes first).
+  const rankErrorRate = (word) => {
+    const st = stats[word];
+    if (!st || (st.attempts || 0) < MIN_ERROR_ATTEMPTS) return 0;
+    return errorRateOf(word, stats);
+  };
+  const byError = [...pool].sort((a, b) => {
+    const d = rankErrorRate(b.word) - rankErrorRate(a.word);
+    if (d !== 0) return d;
+    return (stats[b.word]?.errors || 0) - (stats[a.word]?.errors || 0);
+  });
   const errorPicks = byError.slice(0, REVIEW_WORD_COUNT / 2);
   const picked = new Set(errorPicks.map((w) => w.word));
 
-  const byFreq = pool
+  // "Least seen" = least practiced. Exposure is WordStat.attempts, which counts
+  // every answer in BOTH Learn and Review — so a word that has been reviewed has
+  // a higher count and rotates out, instead of getting stuck (which is what the
+  // old session-count frequency did, since reviewing never raised it).
+  const exposureOf = (word) => stats[word]?.attempts || 0;
+  const byExposure = pool
     .filter((w) => !picked.has(w.word))
-    .sort((a, b) => (freq[a.word] || 0) - (freq[b.word] || 0));
-  const freqPicks = byFreq.slice(0, REVIEW_WORD_COUNT - errorPicks.length);
+    .sort((a, b) => exposureOf(a.word) - exposureOf(b.word));
+  const freqPicks = byExposure.slice(0, REVIEW_WORD_COUNT - errorPicks.length);
 
   return [...errorPicks, ...freqPicks];
 };
