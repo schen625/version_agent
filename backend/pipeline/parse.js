@@ -36,6 +36,23 @@ export const cloze = (sentence, word, placeholder = "_____") => {
   return { cloze: s.replace(w, placeholder), ok: true };
 };
 
+// How many times `word` occurs verbatim in `sentence` (plain substring count,
+// script-agnostic). Used to catch ANSWER LEAKS: the cloze only blanks the first
+// occurrence, so any further occurrence would print the answer right in the
+// question.
+export const countOccurrences = (sentence, word) => {
+  const s = norm(sentence);
+  const w = norm(word);
+  if (!s || !w) return 0;
+  return s.split(w).length - 1;
+};
+
+// Normalization keys for duplicate detection. `sentenceKey` lowercases and
+// strips whitespace, punctuation and symbols (Latin AND CJK), so "你好吗？"
+// and "你 好 吗" compare equal; `wordKey` trims + lowercases.
+export const sentenceKey = (s) => norm(s).toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+export const wordKey = (w) => norm(w).toLowerCase();
+
 // Stage 1 output -> deduped, trimmed vocab list, capped to `count` if given.
 export const normalizeVocab = (json, count) => {
   const arr = Array.isArray(json?.words)
@@ -83,41 +100,97 @@ export const normalizeQuestions = (json) => {
 
 // Stage 3 output -> normalized verdict. Unparseable / missing => reject so the
 // pipeline never accepts a question it could not actually review.
+//
+// Prefers the per-criterion `checks` array (LingoQ-style, one verdict per
+// criterion) and DERIVES accept/failed from it so the model can't claim
+// accept:true while some check failed. Falls back to the flat accept/failed
+// shape for backward compatibility.
 export const normalizeFilterVerdict = (json) => {
   if (!json || typeof json !== "object") {
     return {
       accept: false,
       failed: ["UNPARSEABLE"],
       reasons: "Filter returned no parseable verdict.",
+      checks: [],
     };
   }
+
+  const checks = Array.isArray(json.checks)
+    ? json.checks
+        .map((c) => ({
+          id: norm(c?.id),
+          pass: c?.pass === true,
+          reason: norm(c?.reason),
+        }))
+        .filter((c) => c.id)
+    : [];
+
+  if (checks.length) {
+    // Derive the verdict from the individual checks — authoritative source.
+    const failed = checks.filter((c) => !c.pass).map((c) => c.id);
+    return {
+      accept: failed.length === 0,
+      failed,
+      reasons: norm(json.reasons),
+      checks,
+    };
+  }
+
+  // Backward-compatible flat shape.
   return {
     accept: json.accept === true,
     failed: Array.isArray(json.failed) ? json.failed.map(norm).filter(Boolean) : [],
     reasons: norm(json.reasons),
+    checks: [],
   };
 };
 
 // Cheap, deterministic pre-check run BEFORE the LLM filter. Catches structural
-// failures (missing fields, answer not in sentence, absurd length) without
-// spending a model call, and feeds the pipeline's logs. Same shape as a filter
-// verdict so callers can treat it uniformly.
+// failures (missing fields, answer not in sentence, answer leaks, absurd
+// length) without spending a model call, and feeds the pipeline's logs. Same
+// shape as a filter verdict so callers can treat it uniformly.
 export const structuralCheck = (q) => {
   const failed = [];
+  const notes = [];
   const sentence = norm(q?.sentence);
   const answer = norm(q?.answer);
-  if (!sentence) failed.push("EMPTY_SENTENCE");
-  if (!answer) failed.push("EMPTY_ANSWER");
-  if (answer && sentence && !sentence.includes(answer)) failed.push("CONTAINS_WORD");
-  if (!norm(q?.translation)) failed.push("MISSING_TRANSLATION");
+  if (!sentence) {
+    failed.push("EMPTY_SENTENCE");
+    notes.push("The sentence is empty.");
+  }
+  if (!answer) {
+    failed.push("EMPTY_ANSWER");
+    notes.push("The answer is empty.");
+  }
+  if (answer && sentence) {
+    const n = countOccurrences(sentence, answer);
+    if (n === 0) {
+      failed.push("CONTAINS_WORD");
+      notes.push("The answer word does not appear verbatim in the sentence.");
+    } else if (n > 1) {
+      // ANSWER LEAK: only the first occurrence becomes the blank, so every
+      // extra occurrence would show the learner the answer.
+      failed.push("CONTAINS_WORD");
+      notes.push(
+        `The answer word appears ${n} times; it must appear exactly once, otherwise the remaining occurrences reveal the answer next to the blank.`
+      );
+    }
+  }
+  if (!norm(q?.translation)) {
+    failed.push("MISSING_TRANSLATION");
+    notes.push("The sentence translation is missing.");
+  }
   // Length guard: word-based when spaces exist, char-based for CJK scripts.
   const tooLong = /\s/.test(sentence)
     ? sentence.split(/\s+/).filter(Boolean).length > 20
     : sentence.length > 40;
-  if (sentence && tooLong) failed.push("BEGINNER");
+  if (sentence && tooLong) {
+    failed.push("BEGINNER");
+    notes.push("The sentence is too long for a beginner question.");
+  }
   return {
     accept: failed.length === 0,
     failed,
-    reasons: failed.length ? "Structural pre-check failed." : "",
+    reasons: notes.join(" "),
   };
 };

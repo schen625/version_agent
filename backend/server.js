@@ -5,6 +5,10 @@ import mongoose from "mongoose";
 import authRoutes from "./routes/auth.js";
 import WordStat from "./models/WordStat.js";
 import { GoogleGenAI } from "@google/genai";
+import Session from "./models/Session.js";
+import { createGeminiLLM } from "./pipeline/geminiClient.js";
+import { runPipelineForSession } from "./pipeline/sessionRunner.js";
+import { createConsoleLogger } from "./pipeline/orchestrator.js";
 
 const app = express();
 
@@ -16,47 +20,54 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log("MongoDB connected"))
   .catch(err => console.error(err));
 
-const sessionSchema = new mongoose.Schema({
-  userId: String,
-  mode: String,
-  // The target language being practiced (translateTo, e.g. "zh"). Persisted so
-  // Review can scope to same-language sessions and old words from a different
-  // language don't leak in. Sessions created before this field rely on a
-  // script-detection fallback in the frontend (see learnReview.sessionLangKey).
-  language: String,
-  title: String,
-  summary: String,
-  vocab: [
-    {
-      word: String,
-      translation: String,
-    }
-  ],
-  sentences: [
-    {
-      sentence: String,
-      translation: String,
-    }
-  ],
-  createdAt: { type: Date, default: Date.now },
-  endedAt: Date,
-
-  messages: [
-    {
-      role: String,
-      original: String,
-      translated: String,
-      timestamp: { type: Date, default: Date.now }
-    }
-  ]
-});
-
-const Session = mongoose.model("Session", sessionSchema);
+// The Session model (schema + the new questionBank/pipelineStats fields) now
+// lives in ./models/Session.js and is imported above.
 
 const client = new GoogleGenAI({
   apiKey: process.env.API_KEY,
   apiVersion: "v1alpha"
 });
+
+// ── Question-generation pipeline (async, non-blocking) ──────────────────────
+// Reuses the same Gemini key/model. Runs AFTER a session ends, in the
+// background, so end-session responds immediately (the pipeline makes many LLM
+// calls). Turn off with PIPELINE_ENABLED=false.
+// Lazily created so a missing API_KEY never blocks server startup — it only
+// matters when the pipeline actually runs.
+let _pipelineLLM = null;
+const getPipelineLLM = () =>
+  (_pipelineLLM ||= createGeminiLLM({
+    apiKey: process.env.API_KEY,
+    // model defaults to PIPELINE_MODEL env or gemini-3.1-flash-lite-preview
+    apiVersion: "v1alpha",
+  }));
+const pipelineLogger = createConsoleLogger({ verbose: false });
+
+async function runPipelineInBackground(sessionId) {
+  try {
+    const session = await Session.findById(sessionId);
+    if (!session) return;
+    console.log(`[pipeline] start session=${sessionId}`);
+    const { questionBank, pipelineStats } = await runPipelineForSession({
+      session,
+      llm: getPipelineLLM(),
+      logger: pipelineLogger,
+    });
+    session.questionBank = questionBank;
+    session.pipelineStats = pipelineStats;
+    await session.save();
+    console.log(
+      `[pipeline] done session=${sessionId} accepted=${pipelineStats.totalAccepted} ` +
+        `(inCtx=${pipelineStats.poolSizes.inContextUnfamiliar}, ` +
+        `oocFam=${pipelineStats.poolSizes.outOfContextFamiliar}, ` +
+        `oocUnfam=${pipelineStats.poolSizes.outOfContextUnfamiliar}) ` +
+        `dropped=${pipelineStats.dropped} revisions=${pipelineStats.revisions} ` +
+        `llmCalls=${pipelineStats.llmCalls}`
+    );
+  } catch (err) {
+    console.error(`[pipeline] FAILED session=${sessionId}:`, err?.message || err);
+  }
+}
 
 // Strip em/en dashes so TTS pauses naturally. Replace with comma+space to
 // preserve a real pause where the dash was, then dedupe runs of punctuation.
@@ -383,6 +394,14 @@ app.post("/api/session/end", async (req, res) => {
     session.endedAt = new Date();
 
     await session.save();
+
+    // Kick off the question-generation pipeline in the BACKGROUND so this
+    // response returns immediately (addresses the "end session is slow" note).
+    if (process.env.PIPELINE_ENABLED !== "false") {
+      runPipelineInBackground(session._id).catch((e) =>
+        console.error("pipeline kickoff error:", e?.message || e)
+      );
+    }
 
     res.json(session);
 

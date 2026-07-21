@@ -1,5 +1,4 @@
 import {
-  computeFrequency,
   computeReviewWords,
   errorRateOf,
   findSentenceForWord,
@@ -7,30 +6,6 @@ import {
 } from "./learnReview";
 
 describe("learn review helpers", () => {
-  test("counts word frequency by session, ignoring duplicate words inside one session", () => {
-    const sessions = [
-      {
-        vocab: [
-          { word: "apple" },
-          { word: "apple" },
-          { word: "banana" },
-        ],
-      },
-      {
-        vocab: [
-          { word: "apple" },
-          { word: "cherry" },
-        ],
-      },
-    ];
-
-    expect(computeFrequency(sessions)).toEqual({
-      apple: 2,
-      banana: 1,
-      cherry: 1,
-    });
-  });
-
   test("returns zero error rate for words with no tracked attempts", () => {
     expect(errorRateOf("apple", {})).toBe(0);
     expect(errorRateOf("apple", { apple: { attempts: 0, errors: 4 } })).toBe(0);
@@ -166,9 +141,80 @@ describe("learn review helpers", () => {
       },
     ];
 
-    // Selected session is legacy Chinese (no language field); only the earlier
-    // Chinese session is eligible, the Spanish one is filtered out by script.
     const words = computeReviewWords(sessions[2], sessions, {}).map((w) => w.word);
     expect(words).toEqual(["完美"]);
+  });
+
+  test("excludes tiny-sample words from the highest-error picks (min attempts floor)", () => {
+    const sessions = [
+      {
+        _id: "d1",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        vocab: [
+          { word: "alpha", translation: "a" },
+          { word: "beta", translation: "b" },
+          { word: "gamma", translation: "g" },
+          { word: "delta", translation: "d" },
+        ],
+      },
+      {
+        _id: "d2",
+        createdAt: "2026-01-02T00:00:00.000Z",
+        vocab: [{ word: "later", translation: "l" }],
+      },
+    ];
+    const stats = {
+      alpha: { attempts: 1, errors: 1 },
+      beta: { attempts: 10, errors: 6 },
+      gamma: { attempts: 10, errors: 4 },
+      delta: { attempts: 10, errors: 0 },
+    };
+
+    const review = computeReviewWords(sessions[1], sessions, stats).map((w) => w.word);
+    expect(review.slice(0, 2)).toEqual(["beta", "gamma"]);
+    expect(review.slice(0, 2)).not.toContain("alpha");
+    expect(new Set(review).size).toBe(review.length);
+  });
+
+  test("ranks least-seen review picks by attempts (exposure), not session count", () => {
+    const sessions = [
+      {
+        _id: "s1",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        vocab: [
+          { word: "A", translation: "a" },
+          { word: "B", translation: "b" },
+          { word: "C", translation: "c" },
+          { word: "D", translation: "d" },
+          { word: "E", translation: "e" },
+        ],
+      },
+      {
+        _id: "s2",
+        createdAt: "2026-01-02T00:00:00.000Z",
+        vocab: [
+          { word: "C", translation: "c" },
+          { word: "D", translation: "d" },
+        ],
+      },
+      {
+        _id: "s3",
+        createdAt: "2026-01-03T00:00:00.000Z",
+        vocab: [{ word: "Z", translation: "z" }],
+      },
+    ];
+    const stats = {
+      A: { attempts: 10, errors: 9 },
+      B: { attempts: 10, errors: 8 },
+      C: { attempts: 2, errors: 0 },
+      D: { attempts: 3, errors: 0 },
+      E: { attempts: 50, errors: 0 },
+    };
+
+    const review = computeReviewWords(sessions[2], sessions, stats).map((w) => w.word);
+    expect(review.slice(0, 2)).toEqual(["A", "B"]);
+    expect(review).toContain("C");
+    expect(review).toContain("D");
+    expect(review).not.toContain("E");
   });
 });

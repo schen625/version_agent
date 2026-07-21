@@ -1,14 +1,11 @@
 // backend/pipeline/index.js
 //
-// Question-generation pipeline — PROMPT + PARSING layer (Task: "Fix Prompts").
+// Question-generation pipeline. This module exposes:
+//   - the PROMPT builders (prompts.js) and PARSERS (parse.js) — pure, testable;
+//   - the ORCHESTRATOR (orchestrator.js) — wires those to an injectable LLM and
+//     runs the full flow with the 3x retry loop, structured logging, and stats.
 //
-// This module splits the old single fused summary prompt into four separated,
-// individually engineered stages that share one set of acceptance criteria.
-// It is intentionally side-effect free: prompt builders + parsers only. The
-// orchestrator that wires these to the LLM client and runs the 3x retry loop is
-// the next pipeline task; these pieces are designed to drop straight into it.
-//
-// Intended flow:
+// Flow:
 //
 //   conversation
 //     └─(1) vocabExtractionPrompt ─► parseModelJson ─► normalizeVocab ─► X words
@@ -22,14 +19,14 @@
 //   Out-of-context (feeds the Assessment's out-of-context fill-in-the-blanks):
 //     └─(4) outOfContextQuestionPrompt ─► normalizeQuestions
 //            ─► structuralCheck ─► questionFilterPrompt(mode:"out_of_context")
-//     └─► accepted out-of-context question pool
+//     └─► accepted out-of-context pools (familiar + unfamiliar)
 //
-// Example (pseudo — the LLM call belongs to the orchestrator):
+// Example:
 //
-//   import { vocabExtractionPrompt, parseModelJson, normalizeVocab } from "./pipeline/index.js";
-//   const prompt = vocabExtractionPrompt({ conversation, count: 4, learningLanguage: "zh", knownLanguage: "en" });
-//   const raw = await llm(prompt);               // orchestrator owns this
-//   const words = normalizeVocab(parseModelJson(raw), 4);
+//   import { runPipeline, createConsoleLogger } from "./pipeline/index.js";
+//   const result = await runPipeline({ conversation, llm, logger: createConsoleLogger() });
 
 export * from "./prompts.js";
 export * from "./parse.js";
+export { runPipeline, createConsoleLogger } from "./orchestrator.js";
+export { default } from "./orchestrator.js";

@@ -10,6 +10,10 @@ const shuffle = (arr) => [...arr].sort(() => Math.random() - 0.5);
 // Study phase length: users review the new vocab + sentences for 4 minutes
 // before the system automatically moves them to the learning activities.
 const STUDY_SECONDS = 4 * 60;
+const isLocalTesting =
+  process.env.NODE_ENV === "development" ||
+  (typeof window !== "undefined" &&
+    ["localhost", "127.0.0.1"].includes(window.location.hostname));
 
 const C = {
   bg: "linear-gradient(145deg, #fdf6f0 0%, #f3eeff 50%, #e8f8f5 100%)",
@@ -936,6 +940,28 @@ const LearnMode = ({ mode, onBack }) => {
                   {/* Phase progress: Study → Learn → Review */}
                   <PhaseStepper phase={phase} />
 
+                  {/* Dev/testing backdoor: jump straight to the Review phase
+                      without finishing Study + the activities. */}
+                  {isLocalTesting && phase !== "review" && phase !== "done" && (
+                    <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 4 }}>
+                      <button
+                        onClick={() => setPhase("review")}
+                        title="Testing shortcut: skip ahead to the Review section"
+                        style={{
+                          padding: "5px 12px", fontSize: "0.72rem", fontWeight: 800,
+                          fontFamily: "'Nunito', sans-serif", cursor: "pointer",
+                          color: C.textSub, background: "rgba(255,255,255,0.6)",
+                          border: `1.5px dashed ${C.border}`, borderRadius: 10,
+                          transition: "all 0.15s",
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.background = "white"}
+                        onMouseLeave={e => e.currentTarget.style.background = "rgba(255,255,255,0.6)"}
+                      >
+                        ⚡ Skip to Review (dev)
+                      </button>
+                    </div>
+                  )}
+
                   {/* ── STUDY PHASE: vocab + sentences, on a 4-minute timer ── */}
                   {phase === "study" && (
                     <>
@@ -1220,7 +1246,7 @@ const LearnMode = ({ mode, onBack }) => {
                         color: C.textMuted, fontWeight: 700, lineHeight: 1.5,
                       }}>
                         {reviewWords.length > 0
-                          ? "Revisiting " + reviewWords.length + " word" + (reviewWords.length === 1 ? "" : "s") + " from earlier sessions — your trickiest (highest error rate) and least-seen (lowest frequency)."
+                          ? "Revisiting " + reviewWords.length + " word" + (reviewWords.length === 1 ? "" : "s") + " from earlier sessions — your trickiest (highest error rate) and least-practiced (fewest attempts)."
                           : "Words you've learned in earlier sessions show up here for review."}
                       </p>
                       <ReviewActivities words={reviewWords} recordAttempt={recordAttempt} onComplete={() => setPhase("done")} />

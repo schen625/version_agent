@@ -1,7 +1,7 @@
 // backend/pipeline/prompts.js
 //
 // Prompt builders for the question-generation pipeline. Each stage is a PURE
-// function returning a prompt string — no network calls — so prompts are easy
+// function returning a prompt string - no network calls - so prompts are easy
 // to unit-test and the orchestrator (see ./index.js) owns the LLM client and
 // the retry loop.
 //
@@ -17,13 +17,19 @@
 // "prompt fix": the old single summary prompt fused extraction + generation and
 // had no filter contract; these prompts split the stages and make the criteria
 // explicit and auditable.
+//
+// Grounding: the design mirrors LingoQ (naver-ai/lingoque-monorepo, data/prompts):
+//   - separate generation vs. review prompts with strict JSON contracts;
+//   - the filter judges EACH criterion independently and returns a per-criterion
+//     verdict (cf. their answerability/exclusivity/fluency/… evaluators);
+//   - the revision prompt makes MINIMAL changes targeting only the failed
+//     criteria (cf. their regen.txt). We keep a cloze (single target word)
+//     format because that is what this app's Fill activity + Assessment use,
+//     rather than LingoQ's 3-option multiple-choice stems.
 
 export const LANGUAGE_NAMES = {
   en: "English",
   zh: "Chinese",
-  es: "Spanish",
-  fr: "French",
-  de: "German",
 };
 
 export const langName = (lang) => {
@@ -43,7 +49,7 @@ export const CRITERIA = [
   },
   {
     id: "UNAMBIGUOUS_ANSWER",
-    text: "With the target word blanked out, the target word is the natural, grammatically correct answer; the blank is not trivially fillable by an unrelated common word.",
+    text: "Given the sentence's meaning (the learner also sees the translation as a clue), the target word is a natural, correct fit for the blank. It is FINE if other words could also grammatically fit — only fail this if the target word does not fit the meaning, or the sentence is so generic that even WITH the translation the learner could not tell which word is wanted.",
   },
   {
     id: "GRAMMATICAL",
@@ -84,7 +90,7 @@ const renderCriteria = (mode) =>
     .map((c, i) => `${i + 1}. [${c.id}] ${c.text}`)
     .join("\n");
 
-// ── Stage 1 — Vocabulary extraction ─────────────────────────────────────────
+// Stage 1: Vocabulary extraction:
 export const vocabExtractionPrompt = ({
   conversation = "",
   count = 4,
@@ -120,7 +126,7 @@ ${conversation}
 `;
 };
 
-// ── Stage 2 — Context-based question generation (one word -> Y questions) ─────
+// Stage 2: Context-based question generation (one word -> Y questions):
 export const contextQuestionPrompt = ({
   word,
   translation = "",
@@ -128,17 +134,29 @@ export const contextQuestionPrompt = ({
   count = 3,
   learningLanguage = "zh",
   knownLanguage = "en",
+  avoidSentences = [], // sentences the learner already studied (Learn) — must not be reused
 } = {}) => {
   const L = langName(learningLanguage);
   const K = langName(knownLanguage);
+  const avoid = (avoidSentences || [])
+    .map((s) => (typeof s === "string" ? s.trim() : ""))
+    .filter(Boolean)
+    .slice(0, 12);
+  const avoidBlock = avoid.length
+    ? `
+ALREADY-STUDIED SENTENCES — DO NOT REUSE
+The learner has ALREADY studied the sentences below in the Learn activity. Every sentence you write must be CLEARLY DIFFERENT from ALL of them (not a copy, and not a trivial rewording):
+${avoid.map((s, i) => `${i + 1}. ${s}`).join("\n")}
+`
+    : "";
   return `You are a ${L} language-teaching assistant writing fill-in-the-blank practice for a beginner whose first language is ${K}.
 
 TARGET WORD
 "${word}"${translation ? ` (${K}: ${translation})` : ""}
 
 TASK
-Write ${count} DIFFERENT fill-in-the-blank questions that practice the target word. Each question is one short ${L} sentence that contains the target word, inspired by — but NOT copied from — the conversation below.
-
+Write ${count} DIFFERENT fill-in-the-blank questions that practice the target word. Each question is one short ${L} sentence that contains the target word EXACTLY ONCE, inspired by — but NOT copied from — the conversation below.
+${avoidBlock}
 EACH SENTENCE MUST SATISFY ALL OF THESE CRITERIA:
 ${renderCriteria("in_context")}
 
@@ -159,7 +177,7 @@ ${conversation}
 `;
 };
 
-// ── Stage 3 — Question filter (accept / reject, one question) ─────────────────
+// Stage 3: Question filter (accept / reject, one question)
 export const questionFilterPrompt = ({
   question,
   conversation = "",
@@ -174,32 +192,44 @@ export const questionFilterPrompt = ({
     mode === "out_of_context"
       ? ""
       : `\nCONVERSATION (the question should be a variation inspired by this)\n${conversation}\n`;
-  return `You are a STRICT quality reviewer for beginner ${L} fill-in-the-blank questions (learner's first language: ${K}). Judge ONE question against the criteria and return a verdict.
+  const ids = criteriaFor(mode).map((c) => c.id);
+  const checksTemplate = ids
+    .map((id) => `    { "id": "${id}", "pass": true, "reason": "<why it passes or fails>" }`)
+    .join(",\n");
+  return `You are a STRICT quality reviewer for beginner ${L} fill-in-the-blank questions (learner's first language: ${K}). Judge ONE question against EACH criterion independently and return a per-criterion verdict.
 
 QUESTION UNDER REVIEW
 - sentence: "${q.sentence ?? ""}"
 - answer (the word that will be blanked out): "${q.answer ?? ""}"
 - translation (${K}): "${q.translation ?? ""}"
 
-CRITERIA — check EACH one explicitly:
+CRITERIA — evaluate EACH one on its own:
 ${renderCriteria(mode)}
 
 HOW TO DECIDE
-- Set "accept" to true ONLY if the question satisfies EVERY criterion above.
-- In "failed", list the id of every criterion it FAILS (use an empty array if it passes all).
-- Keep "reasons" specific and concise.
+- Produce one "checks" entry for EVERY criterion id above, in the same order.
+- For each, set "pass" true/false and give a specific one-line "reason".
+- Only mark a criterion "pass": false when it is CLEARLY violated. Give borderline
+  cases the benefit of the doubt and pass them. In particular, do NOT fail a
+  question just because other words could theoretically fit the blank — the
+  learner has the translation as a clue.
+- Set top-level "accept" to true ONLY if every check passes.
+- "failed" MUST list exactly the ids whose "pass" is false (empty array if none).
 
 OUTPUT
 Return ONLY JSON (no markdown, no commentary) in exactly this shape:
 {
+  "checks": [
+${checksTemplate}
+  ],
   "accept": true,
-  "failed": ["<CRITERION_ID>"],
-  "reasons": "<one or two sentences explaining the verdict>"
+  "failed": [],
+  "reasons": "<one or two sentences summarizing the verdict>"
 }
 ${ctxBlock}`;
 };
 
-// ── Stage 4 — Out-of-context question generation ──────────────────────────────
+// Stage 4: Out-of-context question generation
 // mode "familiar":   practice an ALREADY-LEARNED `word` in generic sentences.
 // mode "unfamiliar": teach NEW beginner words the model picks, generic sentences.
 export const outOfContextQuestionPrompt = ({
@@ -209,17 +239,29 @@ export const outOfContextQuestionPrompt = ({
   count = 3,
   learningLanguage = "zh",
   knownLanguage = "en",
+  avoidWords = [], // (unfamiliar mode) words the student ALREADY studied — never use as answers
 } = {}) => {
   const L = langName(learningLanguage);
   const K = langName(knownLanguage);
   const familiar = mode !== "unfamiliar";
+  const avoid = (avoidWords || [])
+    .map((w) => (typeof w === "string" ? w.trim() : ""))
+    .filter(Boolean)
+    .slice(0, 40);
+  const avoidBlock =
+    !familiar && avoid.length
+      ? `
+
+The student has ALREADY studied these words — do NOT use any of them as an answer:
+${avoid.join(", ")}`
+      : "";
   const target = familiar
     ? `TARGET WORD (already learned by the student)
 "${word}"${translation ? ` (${K}: ${translation})` : ""}
 
-Write ${count} sentences that each practice THIS word.`
+Write ${count} sentences that each practice THIS word. The target word must appear EXACTLY ONCE in each sentence.`
     : `NO TARGET WORD IS GIVEN.
-For each question, YOU choose a DIFFERENT common beginner ${L} word the student likely has NOT studied, and build a sentence around it.`;
+For each question, YOU choose a DIFFERENT common beginner ${L} word the student likely has NOT studied, and build a sentence around it (the chosen word must appear EXACTLY ONCE in its sentence).${avoidBlock}`;
   return `You are a ${L} language-teaching assistant writing beginner fill-in-the-blank questions for an assessment. The learner's first language is ${K}.
 
 ${target}
@@ -246,7 +288,7 @@ ${familiar
 `;
 };
 
-// ── (+) Revision prompt — used by the retry loop when a question is rejected ───
+//Revision prompt --> used by the retry loop when a question is rejected
 export const questionRevisionPrompt = ({
   question,
   failed = [],
@@ -263,7 +305,7 @@ export const questionRevisionPrompt = ({
     mode === "out_of_context"
       ? "These are OUT-OF-CONTEXT questions: keep the sentence generic and unrelated to any conversation."
       : `Keep the sentence a variation inspired by this conversation (do not copy it verbatim):\n${conversation}`;
-  return `You are revising ONE beginner ${L} fill-in-the-blank question that FAILED review. Rewrite it so it satisfies EVERY criterion, changing as little as possible and KEEPING the same answer word.
+  return `You are a quiz revision assistant. Rewrite ONE beginner ${L} fill-in-the-blank question that FAILED review so it satisfies EVERY criterion. Make MINIMAL changes: fix only what the failed criteria require and KEEP the same answer word.
 
 REJECTED QUESTION
 - sentence: "${q.sentence ?? ""}"
@@ -273,6 +315,13 @@ REJECTED QUESTION
 WHY IT FAILED
 - failed criteria: ${failed.length ? failed.join(", ") : "(unspecified)"}
 - reviewer notes: ${reasons || "(none)"}
+
+REVISION STRATEGY
+- Change as little as possible; preserve the original learning intent and, for in-context questions, the topic it was inspired by.
+- Address ONLY the failed criteria above; do not "improve" parts that already passed.
+- If UNAMBIGUOUS_ANSWER failed, add just enough context to the sentence that the answer word is the natural fit — do not swap the answer.
+- If BEGINNER failed, shorten or simplify the vocabulary/grammar without changing the answer.
+- If CONTAINS_WORD failed, ensure the exact answer word appears verbatim once.
 
 CRITERIA TO SATISFY
 ${renderCriteria(mode)}
