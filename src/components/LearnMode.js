@@ -110,6 +110,7 @@ const LearnMode = ({ mode }) => {
 
   const [timeLeft, setTimeLeft] = useState(4 * 60);
   const [fillSubset, setFillSubset] = useState([]);
+  const [hasStarted, setHasStarted] = useState(false);
 
   const userId = localStorage.getItem("userId");
 
@@ -123,6 +124,8 @@ const LearnMode = ({ mode }) => {
 
   // Timers
   useEffect(() => {
+    if (!hasStarted) return;
+
     setLearningPhase("chat");
     setTimeLeft(4 * 60);
 
@@ -145,7 +148,7 @@ const LearnMode = ({ mode }) => {
       clearTimeout(studyTimer);
       clearInterval(countdown);
     };
-  }, []);
+  }, [hasStarted]);
 
   const vocab = useMemo(() => selectedSession?.vocab || [], [selectedSession]);
   const sentences = useMemo(() => selectedSession?.sentences || [], [selectedSession]);
@@ -412,6 +415,8 @@ const LearnMode = ({ mode }) => {
             setChatHistory={setChatHistory}
             setSessionActiveGlobal={() => {}}
             refreshSessions={fetchSessions}
+            onStartSession={() => setHasStarted(true)}
+            learningPhase={learningPhase}
           />
         )}
 

@@ -7,6 +7,12 @@ import buildPipeline from "./agents/buildPipeline.js";
 import Session from "./models/Sessions.js"
 import client from "./geminiClient.js";
 import UserWordStat from "./models/WordStats.js";
+import {
+  contextQuestionPrompt,
+  outOfContextQuestionPrompt,
+  parseModelJson,
+  normalizeQuestions
+} from "./pipeline/index.js";
 
 const app = express();
 
@@ -53,7 +59,7 @@ async function generateSessionSummary(messages) {
     contents: [{ role: "user", parts: [{ text: prompt }] }]
   });
 
-  //in case JSON error 
+  //in case JSON error
   let text = res.text.trim();
   text = text.replace(/```json/g, "").replace(/```/g, "").trim();
   try {
@@ -149,6 +155,10 @@ app.post("/api/session/message", async (req, res) => {
     translateTo,
   } = req.body;
 
+  // allows agent to initiate conversation
+    const isStartConversation = message === "__START_CONVERSATION__";
+    const isFollowUp = message === "__FOLLOW_UP__";
+
   try {
     const session = await Session.findById(sessionId);
 
@@ -156,48 +166,94 @@ app.post("/api/session/message", async (req, res) => {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    const translatePrompt = `Translate this from ${translateFrom} to ${translateTo}. Only output the translation. ${message}`;
-    const translationRes = await client.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: [{ role: "user", parts: [{ text: translatePrompt }] }]
-    });
+    let translatedUserMessage = null;
+
+    if (!isStartConversation && !isFollowUp) {
+      const translatePrompt = `Translate this from ${translateFrom} to ${translateTo}. Only output the translation. ${message}`;
+
+      const translationRes = await client.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [{ role: "user", parts: [{ text: translatePrompt }] }]
+      });
+
+      translatedUserMessage = translationRes.text.trim();
+    }
 
     const historyText = session.messages
-      .slice(-10) // last 10 messages (important for token control)
+      .slice(-10)
       .map(m => `${m.role === "user" ? "User" : "Agent"}: ${m.original}`)
       .join("\n");
 
-    const translatedUserMessage = translationRes.text.trim();
-    const agentPrompt = `
-      You are a casual conversation partner helping someone practice a language, use conversation history for context.
+    const agentPrompt = isStartConversation
+      ? `
+    You are a casual conversation partner helping someone practice a language.
 
-      RULES:
-      - Respond with ONLY ONE message
-      - Do NOT give multiple options
-      - Do NOT use bullet points
-      - Do NOT explain your answer
-      - Do NOT correct grammar unless asked
-      - Do NOT include notes or meta comments
-      - Keep it natural and conversational
-      - Keep it to 1-2 sentences MAX
-      - Always continue the conversation
+    Start the conversation first.
 
-      - Absolutely NEVER output lists, bullet points, or multiple versions
-      - If you feel multiple answers are possible, choose the BEST single one
+    CRITICAL RULES:
+    - Respond with ONLY ONE message
+    - Ask one simple, friendly question
+    - Do NOT give multiple options
+    - Do NOT use bullet points
+    - Do NOT explain your answer
+    - Keep it natural and conversational
+    - Keep it to one short paragraph
+    - Respond in ${translateTo}
 
-      Format:
-      One short paragraph only.
-      No formatting.
-      No markdown.
+    Format:
+    One short paragraph only.
+    No formatting.
+    No markdown.
+    `
+      : isFollowUp
+        ? `
+    You are a casual conversation partner helping someone practice a language.
 
-      Conversation history:
-      ${historyText}
-      
-      User said (in ${translateFrom}):
-      "${message}"
+    The user has not responded yet. Send a gentle follow-up message to keep the conversation going.
 
-      Respond in ${translateTo}.
-      `;
+    Conversation history:
+    ${historyText}
+
+    CRITICAL RULES:
+    - Respond with ONLY ONE message
+    - Ask one simple follow-up question
+    - Do NOT sound annoyed
+    - Do NOT give multiple options
+    - Do NOT use bullet points
+    - Do NOT explain your answer
+    - Keep it natural and conversational
+    - Keep it to one short paragraph
+    - Respond in ${translateTo}
+
+    Format:
+    One short paragraph only.
+    No formatting.
+    No markdown.
+    `
+        : `
+    You are a casual conversation partner helping someone practice a language.
+
+    Conversation history:
+    ${historyText}
+
+    User's latest message:
+    ${translatedUserMessage}
+
+    CRITICAL RULES:
+    - Respond with ONLY ONE message
+    - Do NOT give multiple options
+    - Do NOT use bullet points
+    - Do NOT explain your answer
+    - Do NOT correct grammar unless asked
+    - Do NOT include notes or meta comments
+    - Keep it natural and conversational
+    - Keep it to one paragraph MAX
+    - Always continue the conversation
+    - Absolutely NEVER output lists, bullet points, or multiple versions
+    - If you feel multiple answers are possible, choose the BEST single one
+
+    Respond in ${translateTo}.
+    `;
 
     const agentRes = await client.models.generateContent({
       model: "gemini-2.5-flash",
@@ -212,18 +268,26 @@ app.post("/api/session/message", async (req, res) => {
     });
     const agentReplyTranslated = backTranslateRes.text.trim();
 
-    session.messages.push(
-      {
-        role: "user",
-        original: message,
-        translated: translatedUserMessage
-      },
-      {
+    if (isStartConversation || isFollowUp) {
+      session.messages.push({
         role: "agent",
         original: agentReplyOriginal,
         translated: agentReplyTranslated
-      }
-    );
+      });
+    } else {
+      session.messages.push(
+        {
+          role: "user",
+          original: message,
+          translated: translatedUserMessage
+        },
+        {
+          role: "agent",
+          original: agentReplyOriginal,
+          translated: agentReplyTranslated
+        }
+      );
+    }
 
     await session.save();
 
@@ -252,6 +316,61 @@ app.get("/api/session/:sessionId", async (req, res) => {
 app.get("/api/user/:userId/sessions", async (req, res) => {
   const sessions = await Session.find({ userId: req.params.userId });
   res.json(sessions);
+});
+
+app.post("/api/assessment/generate", async (req, res) => {
+  try {
+    const { sessionId, learningLanguage = "zh", knownLanguage = "en" } = req.body;
+
+    const session = await Session.findById(sessionId);
+    if (!session) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    const conversation = session.messages
+      .map(m => `${m.role}: ${m.original}`)
+      .join("\n");
+
+    const learnedWords = session.vocab || [];
+
+    const outOfContextFamiliar = [];
+
+    for (const vocab of learnedWords) {
+      const prompt = outOfContextQuestionPrompt({
+        mode: "familiar",
+        word: vocab.word,
+        translation: vocab.translation,
+        count: 2,
+        learningLanguage,
+        knownLanguage
+      });
+
+      const result = await client.models.generateContent({
+        model: "gemini-3.1-flash-lite-preview",
+        contents: [{ role: "user", parts: [{ text: prompt }] }]
+      });
+
+      const parsed = parseModelJson(result.text);
+      const questions = normalizeQuestions(parsed).filter(q => q.valid);
+
+      outOfContextFamiliar.push(
+        ...questions.map(q => ({
+          ...q,
+          condition: "out_of_context_familiar",
+          type: "fill_blank",
+          word: vocab.word
+        }))
+      );
+    }
+
+    res.json({
+      fillBlankQuestions: outOfContextFamiliar
+    });
+
+  } catch (err) {
+    console.error("ASSESSMENT GENERATE ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.listen(3001, () => {
