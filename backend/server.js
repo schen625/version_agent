@@ -55,7 +55,7 @@ async function generateSessionSummary(messages) {
     `;
 
   const res = await client.models.generateContent({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.1-flash-lite-preview",
     contents: [{ role: "user", parts: [{ text: prompt }] }]
   });
 
@@ -172,7 +172,7 @@ app.post("/api/session/message", async (req, res) => {
       const translatePrompt = `Translate this from ${translateFrom} to ${translateTo}. Only output the translation. ${message}`;
 
       const translationRes = await client.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: "gemini-3.1-flash-lite-preview",
         contents: [{ role: "user", parts: [{ text: translatePrompt }] }]
       });
 
@@ -256,14 +256,14 @@ app.post("/api/session/message", async (req, res) => {
     `;
 
     const agentRes = await client.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.1-flash-lite-preview",
       contents: [{ role: "user", parts: [{ text: agentPrompt }] }]
     });
 
     const agentReplyOriginal = agentRes.text.trim();
     const backTranslatePrompt = `Translate this from ${translateTo} to ${translateFrom}. Only output the translation. ${agentReplyOriginal}`;
     const backTranslateRes = await client.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.1-flash-lite-preview",
       contents: [{ role: "user", parts: [{ text: backTranslatePrompt }] }]
     });
     const agentReplyTranslated = backTranslateRes.text.trim();
