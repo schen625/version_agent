@@ -150,22 +150,31 @@ const LearnMode = ({ mode }) => {
     };
   }, [hasStarted]);
 
-  const vocab = useMemo(() => selectedSession?.vocab || [], [selectedSession]);
-  const sentences = useMemo(() => selectedSession?.sentences || [], [selectedSession]);
+  const vocab = useMemo(
+    () => selectedSession?.vocab || [],
+    [selectedSession]
+  );
+
+  const sentences = useMemo(
+    () => (selectedSession?.sentences || []).slice(0, 4),
+    [selectedSession]
+  );
+
+  const learnQuestions = selectedSession?.learnQuestions || [];
 
   const resetAll = () => {
-    const indices = vocab.map((_, i) => i);
+    const vocabIndices = vocab.map((_, i) => i);
 
-    // setMcqOrder(shuffle(indices));
-    // setFillOrder(shuffle(indices));
-    // setMatchOrder(shuffle(indices));
+    const validQuestions = learnQuestions.filter(
+      q => q && q.answer
+    );
 
-    // setMcqIndex(0); setMcqAnswered({}); setMcqDone(false); setMcqMistakes(0);
-    // setMatchState({}); setMatchSelected(null); setMatchDone(false);
-    // setFillIndex(0); setFillAnswered({}); setFillDone(false); setFillMistakes(0);
+    setFillSubset(
+      shuffle(validQuestions).slice(0, 4)
+    );
 
-    setMcqOrder(shuffle(indices));
-    setFillOrder(shuffle(indices));
+    setMcqOrder(shuffle(vocabIndices));
+    setFillOrder(shuffle(vocabIndices));
 
     setMcqIndex(0);
     setMcqAnswered({});
@@ -176,21 +185,6 @@ const LearnMode = ({ mode }) => {
     setFillAnswered({});
     setFillDone(false);
     setFillMistakes(0);
-  const vocab = selectedSession?.vocab || [];
-  const sentences = (selectedSession?.sentences || []).slice(0, 4);
-  const learnQuestions = selectedSession?.learnQuestions || [];
-
-  const resetAll = () => {
-    const vocabIndices = vocab.map((_, i) => i);
-    const validQuestions = learnQuestions.filter(
-      q => q && q.answer
-    );
-    setFillSubset(
-      shuffle(validQuestions).slice(0, 4)
-    );
-    setMcqOrder(shuffle(vocabIndices));
-    setMcqIndex(0); setMcqAnswered({}); setMcqDone(false); setMcqMistakes(0);
-    setFillIndex(0); setFillAnswered({}); setFillDone(false); setFillMistakes(0);
   };
 
   useEffect(() => { if (selectedSession) resetAll(); }, [selectedSession]);
@@ -682,20 +676,35 @@ const LearnMode = ({ mode }) => {
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
               <RestartBtn onClick={resetAll} />
               <span style={{ fontSize: "0.78rem", color: C.textMuted, fontWeight: 700 }}>
-                {fillDone ? "Complete!" : `${fillIndex + 1} / ${vocab.length}`}
+                {fillDone
+                  ? "Complete!"
+                  : fillSubset.length
+                    ? `${fillIndex + 1} / ${fillSubset.length}`
+                    : "0 / 0"}
               </span>
             </div>
 
-            {!fillDone ? (
+            {fillSubset.length > 0 && !fillDone ? (
               <div style={{ ...glassCard, padding: "22px 26px", marginBottom: 40 }}>
                 <div style={{ margin: "0 0 16px", fontSize: "1rem", lineHeight: 1.7, fontWeight: 700, color: C.textSub }}>
-                  {sentences[currentFillIndex]?.sentence?.replace(
-                    vocab[currentFillIndex]?.word,
-                    "______"
-                  )}
-                  <p style={{ fontSize: 12, color: "gray" }}>
-                    {sentences[currentFillIndex]?.translation}
-                  </p>
+                  <div
+                    style={{
+                      margin: "0 0 16px",
+                      fontSize: "1rem",
+                      lineHeight: 1.7,
+                      fontWeight: 700,
+                      color: C.textSub
+                    }}
+                  >
+                    {currentQuestion?.question}
+
+                    <p style={{ fontSize: 12, color: "gray" }}>
+                      {currentQuestion?.translation}
+                    </p>
+                  </div>
+                <p style={{ fontSize: 12, color: "gray" }}>
+                  {currentQuestion?.translation}
+                </p>
                 </div>
 
                 <div style={{ display: "flex", flexWrap: "wrap" }}>

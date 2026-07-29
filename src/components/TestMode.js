@@ -5,28 +5,61 @@ const shuffle = (arr) =>
 
 const ASSESSMENT_TIME = 30 * 60;
 
-const TestMode = ({ onBack, sessionId }) => {
+const TestMode = ({ onBack }) => {
   const [session, setSession] = useState(null);
   const [assessmentStarted, setAssessmentStarted] = useState(false);
   const [assessmentSubmitted, setAssessmentSubmitted] = useState(false);
   const [timeLeft, setTimeLeft] = useState(ASSESSMENT_TIME);
   const [answers, setAnswers] = useState({});
 
+  // Track when each question was first answered, plus when the whole
+  // assessment began. Used to approximate "time taken" per question in
+  // the report (see buildReport below).
+  const [answerTimestamps, setAnswerTimestamps] = useState({});
+  const [assessmentStartTime, setAssessmentStartTime] = useState(null);
+
+  // Populated on submit — the full per-question report described in the
+  // assessment doc (question, condition, answer, word accuracy, time taken).
+  // Not sent anywhere yet, just held in state per your call.
+  const [report, setReport] = useState(null);
+
+  const userId = localStorage.getItem("userId");
+
+  // The app doesn't currently pass a sessionId down to TestMode (App.jsx
+  // never captures one from LearnMode). LearnMode resolves "the current
+  // session" the same way: fetch all sessions for this user, sort by
+  // createdAt, take the most recent. We mirror that here so the
+  // assessment always runs against the study session the user just did.
   const startAssessment = async () => {
+    if (!userId) {
+      console.error("START ASSESSMENT ERROR: no userId in localStorage");
+      return;
+    }
+
     try {
       const res = await fetch(
-        `http://localhost:3001/api/session/${sessionId}`
+        `http://localhost:3001/api/user/${userId}/sessions`
       );
 
       if (!res.ok) {
         throw new Error("Failed to load assessment data");
       }
 
-      const data = await res.json();
+      const userSessions = await res.json();
 
-      setSession(data);
+      const mostRecentSession = [...userSessions].sort(
+        (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+      )[0];
+
+      if (!mostRecentSession) {
+        throw new Error("No sessions found for this user");
+      }
+
+      setSession(mostRecentSession);
+      console.log("SESSION DATA:", mostRecentSession);
       setTimeLeft(ASSESSMENT_TIME);
       setAssessmentStarted(true);
+      setAssessmentStartTime(Date.now());
     } catch (err) {
       console.error("START ASSESSMENT ERROR:", err);
     }
@@ -40,6 +73,7 @@ const TestMode = ({ onBack, sessionId }) => {
     return session?.questionPool || [];
   }, [session]);
 
+  // Highest error rate first, so the top slice below is the "hardest" words.
   const sortedVocab = useMemo(() => {
     return [...allVocab]
       .map((vocab) => {
@@ -76,11 +110,13 @@ const TestMode = ({ onBack, sessionId }) => {
     return grouped;
   }, [allPool]);
 
+  // Doc: MCQ = 20 questions, top 20 words by highest error rate.
   const mcqQuestions = useMemo(() => {
     const topTwentyWords = sortedVocab.slice(0, 20);
 
     return shuffle(topTwentyWords).map((vocab, index) => ({
       id: `mcq_${index}_${vocab.word}`,
+      condition: "mcq",
       word: vocab.word,
       answer: vocab.translation,
     }));
@@ -106,6 +142,9 @@ const TestMode = ({ onBack, sessionId }) => {
     return optionsMap;
   }, [mcqQuestions, allVocab]);
 
+  // Doc: Fill in the Blank = 40 questions, 10 per condition.
+  // Stable IDs (word-based, not random) so answers/timestamps don't get
+  // orphaned across re-renders.
   const fillQuestions = useMemo(() => {
     const buildQuestions = (questions, condition) =>
       shuffle(questions)
@@ -146,14 +185,76 @@ const TestMode = ({ onBack, sessionId }) => {
     ];
   }, [questionsByCondition]);
 
+  const fillOptionsMap = useMemo(() => {
+    const map = {};
+    fillQuestions.forEach((q) => {
+      const correct = allVocab.find((v) => v.word === q.word);
+      const distractors = shuffle(
+        allVocab.filter((v) => v.word !== q.word)
+      ).slice(0, 3);
+      map[q.id] = shuffle([correct, ...distractors].filter(Boolean));
+    });
+    return map;
+  }, [fillQuestions, allVocab]);
+
   const setAnswer = (questionId, value) => {
     setAnswers((previousAnswers) => ({
       ...previousAnswers,
       [questionId]: value,
     }));
+
+    // Only record the timestamp the first time a question is answered,
+    // so changing your mind later doesn't reset the "time taken" clock.
+    setAnswerTimestamps((previousTimestamps) =>
+      previousTimestamps[questionId]
+        ? previousTimestamps
+        : { ...previousTimestamps, [questionId]: Date.now() }
+    );
+  };
+
+  // Builds the per-question report the doc asks for:
+  // question, condition, answer given, word accuracy rate, time taken.
+  //
+  // "Time taken" is approximated as the gap between this question's
+  // answer timestamp and the previous one answered (chronologically),
+  // since we don't currently track when a question first came into view.
+  const buildReport = () => {
+    const allQuestions = [...mcqQuestions, ...fillQuestions];
+
+    const answeredInOrder = allQuestions
+      .filter((q) => answerTimestamps[q.id])
+      .sort((a, b) => answerTimestamps[a.id] - answerTimestamps[b.id]);
+
+    const timeTakenMap = {};
+    let previousTimestamp = assessmentStartTime;
+
+    answeredInOrder.forEach((q) => {
+      const ts = answerTimestamps[q.id];
+      timeTakenMap[q.id] = previousTimestamp
+        ? Math.round((ts - previousTimestamp) / 1000)
+        : null;
+      previousTimestamp = ts;
+    });
+
+    return allQuestions.map((q) => {
+      const vocabStat = sortedVocab.find((v) => v.word === q.word);
+      const userAnswer = answers[q.id] ?? null;
+
+      return {
+        questionId: q.id,
+        question: q.question || q.word,
+        condition: q.condition,
+        answer: userAnswer,
+        correctAnswer: q.answer,
+        isCorrect: userAnswer === q.answer,
+        wordErrorRate: vocabStat?.errorRate ?? null,
+        timeTakenSeconds: timeTakenMap[q.id] ?? null,
+      };
+    });
   };
 
   const submitAssessment = () => {
+    setReport(buildReport());
     setAssessmentSubmitted(true);
   };
 
@@ -182,6 +283,8 @@ const TestMode = ({ onBack, sessionId }) => {
     ) {
       submitAssessment();
     }
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assessmentStarted, assessmentSubmitted, timeLeft]);
 
   const minutes = Math.floor(timeLeft / 60);
@@ -292,7 +395,7 @@ const TestMode = ({ onBack, sessionId }) => {
 
               <button
                 onClick={startAssessment}
-                disabled={!sessionId}
+                disabled={!userId}
                 style={{
                   padding: "14px 36px",
                   border: "none",
@@ -302,8 +405,8 @@ const TestMode = ({ onBack, sessionId }) => {
                   color: "white",
                   fontWeight: 700,
                   fontSize: "1rem",
-                  cursor: sessionId ? "pointer" : "not-allowed",
-                  opacity: sessionId ? 1 : 0.6,
+                  cursor: userId ? "pointer" : "not-allowed",
+                  opacity: userId ? 1 : 0.6,
                   boxShadow:
                     "0 8px 20px rgba(145,120,204,0.25)",
                 }}
@@ -414,49 +517,62 @@ const TestMode = ({ onBack, sessionId }) => {
             <section>
               <h2>Fill in the Blank</h2>
 
-              {fillQuestions.map((question, index) => (
-                <div
-                  key={question.id}
-                  style={{
-                    marginBottom: 18,
-                    padding: 18,
-                    borderRadius: 16,
-                    background: "rgba(255,255,255,0.65)",
-                    boxShadow: "0 6px 18px rgba(0,0,0,0.06)",
-                  }}
-                >
-                  <p style={{ fontWeight: 700 }}>
-                    {index + 1}. {question.question}
-                  </p>
+              {fillQuestions.map((q) => {
+                const options = fillOptionsMap[q.id] || [];
 
-                  {question.translation && (
-                    <p
+                return (
+                  <div
+                    key={q.id}
+                    style={{
+                      marginBottom: 25,
+                      padding: 15,
+                      background: "white",
+                      borderRadius: 12,
+                    }}
+                  >
+                    <div
                       style={{
-                        color: "#9e8cc0",
-                        fontSize: "0.9rem",
+                        fontWeight: 800,
+                        fontSize: "1rem",
+                        marginBottom: 6,
                       }}
                     >
-                      {question.translation}
-                    </p>
-                  )}
+                      {q.question}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: "0.8rem",
+                        color: "#aaa",
+                        marginBottom: 10,
+                      }}
+                    >
+                      {q.translation}
+                    </div>
 
-                  <input
-                    value={answers[question.id] || ""}
-                    onChange={(event) =>
-                      setAnswer(question.id, event.target.value)
-                    }
-                    placeholder="Type your answer"
-                    style={{
-                      marginTop: 8,
-                      padding: 10,
-                      borderRadius: 10,
-                      border: "1px solid #d8ccef",
-                      width: "100%",
-                      maxWidth: 400,
-                    }}
-                  />
-                </div>
-              ))}
+                    <div style={{ display: "flex", flexWrap: "wrap" }}>
+                      {options.map((v) => (
+                        <button
+                          key={v.word}
+                          disabled={assessmentSubmitted}
+                          onClick={() => setAnswer(q.id, v.word)}
+                          style={{
+                            margin: 5,
+                            padding: "8px 12px",
+                            borderRadius: 10,
+                            background:
+                              answers[q.id] === v.word
+                                ? "#c9b3f5"
+                                : "white",
+                            border: "1px solid #ddd",
+                          }}
+                        >
+                          {v.word}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
             </section>
 
             <button
