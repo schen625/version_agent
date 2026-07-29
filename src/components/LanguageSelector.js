@@ -1,7 +1,6 @@
 const LANGUAGES = [
   { code: "auto", name: "Detect Language" },
   { code: "en", name: "English" },
-  { code: "es", name: "Spanish" },
   { code: "zh", name: "Chinese" },
 ];
 

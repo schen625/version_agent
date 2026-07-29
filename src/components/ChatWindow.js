@@ -6,7 +6,7 @@ import { sendMessage } from "./Chat.js";
 import avatar from "../assets/user-avatar.png";
 
 //Sessions
-const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSessionActiveGlobal }) => {
+const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSessionActiveGlobal,  onStartSession, learningPhase }) => {
   const [sessionId, setSessionId] = useState(null);
   const [sessionActive, setSessionActive] = useState(false);
   const [recording, setRecording] = useState(false);
@@ -14,6 +14,9 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
   const [translateTo, setTranslateTo] = useState("");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const messagesEndRef = useRef(null);
+  const agentStartedRef = useRef(false);
+  const inactivityTimerRef = useRef(null);
+
   const { transcript, resetTranscript, listening } = useSpeechRecognition();
 
   //timer 
@@ -40,9 +43,56 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatHistory]);
 
-  if (!SpeechRecognition.browserSupportsSpeechRecognition()) {
-    return <p style={{ padding: 20, color: "#9178cc" }}>Browser does not support speech recognition.</p>;
-  }
+  useEffect(() => {
+    const startAgentConversation = async () => {
+      try {
+        const res = await sendMessage({
+          sessionId,
+          message: "__START_CONVERSATION__",
+          translateFrom,
+          translateTo,
+          mode,
+        });
+
+        speakText(res.agent.original, getLangCode(translateTo));
+
+        setChatHistory((prev) => [
+          ...prev,
+          {
+            role: "agent",
+            original: res.agent.original,
+            translated: res.agent.translated,
+          },
+        ]);
+      } catch (err) {
+        console.error(err);
+      }
+    };
+
+    if (
+      sessionActive &&
+      sessionId &&
+      translateFrom &&
+      translateTo &&
+      !agentStartedRef.current
+    ) {
+      agentStartedRef.current = true;
+      startAgentConversation();
+    }
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionActive, sessionId, translateFrom, translateTo, mode, setChatHistory]);
+
+  useEffect(() => {
+  return () => {
+    if (inactivityTimerRef.current) {
+      clearTimeout(inactivityTimerRef.current);
+      inactivityTimerRef.current = null;
+    }
+
+    speechSynthesis.cancel();
+  };
+}, []);
 
   //Audio Code
   const getVoiceForLang = (langCode) => {
@@ -59,6 +109,18 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
     const utterance = new SpeechSynthesisUtterance(text);
 
     const voice = getVoiceForLang(lang);
+
+    console.log("Speaking text:", text);
+    console.log("Requested lang:", lang);
+    console.log("Selected voice:", voice);
+    console.log(
+      "Available voices:",
+      speechSynthesis.getVoices().map(v => ({
+        name: v.name,
+        lang: v.lang
+      }))
+    );
+
     if (voice) utterance.voice = voice;
 
     utterance.lang = lang;
@@ -79,6 +141,8 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
         fr: "fr-FR",
         german: "de-DE",
         de: "de-DE",
+        chinese: "zh-CN",
+        zh: "zh-CN",
       };
     return map[lang?.toLowerCase()] || "en-US";
   };
@@ -91,10 +155,60 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ userId: localStorage.getItem("userId"), mode }),
     });
+
+    if (!res.ok) {
+      throw new Error("Failed to start session");
+    }
     const data = await res.json();
+
     setSessionId(data._id); setSessionActive(true);
     setSessionActiveGlobal(true); setChatHistory([]);
     setElapsedSeconds(0);
+
+    onStartSession?.();
+  };
+
+  const sendFollowUpMessage = async () => {
+    if (!sessionActive || !sessionId || learningPhase !== "chat") return;
+    
+    try {
+      const res = await sendMessage({
+        sessionId,
+        message: "__FOLLOW_UP__",
+        translateFrom,
+        translateTo,
+        mode,
+      });
+
+      if (learningPhase !== "chat") return;
+
+      speakText(res.agent.original, getLangCode(translateTo));
+
+      setChatHistory((prev) => [
+        ...prev,
+        {
+          role: "agent",
+          original: res.agent.original,
+          translated: res.agent.translated,
+        },
+      ]);
+
+      resetInactivityTimer();
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const resetInactivityTimer = () => {
+    if (inactivityTimerRef.current) {
+      clearTimeout(inactivityTimerRef.current);
+    }
+
+    if (learningPhase !== "chat") return;
+
+    inactivityTimerRef.current = setTimeout(() => {
+      sendFollowUpMessage();
+    }, 45000);
   };
 
   const handleSendVoiceMessage = async () => {
@@ -118,6 +232,8 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
         ]);
       }
     } catch (err) { console.error(err); }
+
+    resetInactivityTimer();
   };
 
   const endSession = async () => {
@@ -130,6 +246,12 @@ const ChatWindow = ({ mode, chatHistory, setChatHistory, refreshSessions, setSes
     setSessionActiveGlobal(false); setChatHistory([]);
     setElapsedSeconds(0);
     refreshSessions();
+    agentStartedRef.current = false;
+
+    // cleanup for timer for session end
+    if (inactivityTimerRef.current) {
+      clearTimeout(inactivityTimerRef.current);
+    }
   };
 
   const toggleListening = () => {
