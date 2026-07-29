@@ -1,7 +1,6 @@
 // backend/pipeline/runLive.mjs
 //
-// Run the pipeline LIVE against real Gemini (+ optionally your real MongoDB).
-// The sandbox can't reach Atlas or Gemini, so this is the script Pranshul runs
+// Run the pipeline LIVE against real Gemini
 // locally to validate end-to-end and to backfill the question bank.
 //
 // Usage (from backend/):
